@@ -2,6 +2,7 @@
 #include "temperature.h"
 #include "brew_fsm.h"
 #include "http_server.h"
+#include "wifi_prov.h"
 #include <Preferences.h>
 
 /* ===== PINS ===== */
@@ -55,6 +56,7 @@ void setup() {
   pid.setIntegralClamp(40);
   pid.reset();
 
+  wifiSetup();
   httpSetup();
   windowStart = millis();
 }

@@ -1,37 +1,16 @@
 #pragma once
-#include <WiFi.h>
 #include <WebServer.h>
 #include "pid.h"
 #include "brew_fsm.h"
+#include "web_ui.h"
 
-extern float currentTemp;
-extern PIDController pid;
-extern unsigned long brewMs;
-extern unsigned long preinfusionMs;
-extern unsigned long pauseMs;
 extern void saveSettings();
 
-static WebServer server(80);
+static WebServer server(8080);
 
 inline void httpSetup() {
-  WiFi.softAP("ESP32-ESPRESSO", "12345678");
-
   server.on("/", HTTP_GET, []() {
-    String html =
-      "<h1>ESPRESSO</h1>"
-      "<p>Temp: " + String(currentTemp,1) + " C</p>"
-      "<form action='/set' method='POST'>"
-      "Setpoint: <input name='t' value='" + String(pid.getSetpoint(),1) + "'><br>"
-      "Preinfusion (s): <input name='pre' value='" + String(preinfusionMs/1000) + "'><br>"
-      "Pause (s): <input name='pause' value='" + String(pauseMs/1000) + "'><br>"
-      "Brew (s): <input name='brew' value='" + String(brewMs/1000) + "'><br>"
-      "<input type='submit' value='SAVE'>"
-      "</form>"
-      "<br>"
-      "<form action='/start' method='POST'><button>START</button></form>"
-      "<form action='/stop' method='POST'><button>STOP</button></form>";
-
-    server.send(200, "text/html", html);
+    server.send(200, "text/html", renderHomePage());
   });
 
   server.on("/set", HTTP_POST, []() {

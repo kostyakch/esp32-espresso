@@ -1,0 +1,66 @@
+#pragma once
+#include "pid.h"
+#include "brew_fsm.h"
+
+extern float currentTemp;
+extern PIDController pid;
+extern unsigned long brewMs;
+extern unsigned long preinfusionMs;
+extern unsigned long pauseMs;
+
+inline String renderHomePage() {
+  String html =
+    "<!doctype html><html><head>"
+    "<meta charset='utf-8'>"
+    "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+    "<title>Lilit Anita Espresso</title>"
+    "<style>"
+    ":root{--bg:#f6f1e6;--card:#ffffff;--ink:#2a241e;--muted:#6f655c;--accent:#c46a2f;--accent2:#2f6f5c;}"
+    "body{margin:0;font-family:'Trebuchet MS',Verdana,sans-serif;background:radial-gradient(1200px 800px at 20% -10%,#fff6e3 0%,#f2e7d4 35%,#e9dcc6 100%);color:var(--ink);}"
+    ".wrap{max-width:520px;margin:0 auto;padding:20px;}"
+    ".hero{background:linear-gradient(135deg,#fff 0%,#f7efe2 100%);border:1px solid #ead9c3;border-radius:18px;padding:18px 18px 14px;box-shadow:0 10px 30px rgba(45,32,20,.08);}"
+    "h1{margin:0 0 6px;font-size:26px;letter-spacing:.5px;}"
+    ".temp{font-size:34px;font-weight:700;margin:6px 0 8px;}"
+    ".sub{color:var(--muted);font-size:13px;}"
+    ".grid{display:grid;grid-template-columns:1fr;gap:12px;margin-top:16px;}"
+    ".card{background:var(--card);border:1px solid #ead9c3;border-radius:16px;padding:14px;}"
+    "label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.6px;}"
+    "input{width:90%;padding:12px 12px;border:1px solid #e0d1be;border-radius:12px;font-size:16px;background:#fffaf2;}"
+    ".row{display:grid;grid-template-columns:1fr 1fr;gap:10px;}"
+    ".actions{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px;}"
+    "button{width:100%;padding:12px 14px;border-radius:14px;border:0;font-size:16px;font-weight:700;color:#fff;}"
+    ".save{background:var(--accent);}"
+    ".start{background:var(--accent2);}"
+    ".stop{background:#8d2e2e;}"
+    ".note{font-size:12px;color:var(--muted);margin-top:8px;}"
+    "</style></head><body>"
+    "<div class='wrap'>"
+    "<div class='hero'>"
+    "<h1>Lilit Espresso</h1>"
+    "<div class='temp'>" + String(currentTemp,1) + " C</div>"
+    "<div class='sub'>Заданная Темп. " + String(pid.getSetpoint(),1) + " C</div>"
+    "</div>"
+    "<div class='grid'>"
+    "<form class='card' action='/set' method='POST'>"
+    "<label>Темп. (C)</label>"
+    "<input name='t' inputmode='decimal' value='" + String(pid.getSetpoint(),1) + "'>"
+    "<div class='row' style='margin-top:12px;'>"
+    "<div><label>Предсм. (s)</label><input name='pre' inputmode='numeric' value='" + String(preinfusionMs/1000) + "'></div>"
+    "<div><label>Пауза (s)</label><input name='pause' inputmode='numeric' value='" + String(pauseMs/1000) + "'></div>"
+    "</div>"
+    "<div style='margin-top:12px;'><label>Пролив (s)</label><input name='brew' inputmode='numeric' value='" + String(brewMs/1000) + "'></div>"
+    "<div style='margin-top:14px;'><button class='save' type='submit'>Сохранить</button></div>"
+    "<div class='note'>Изменения вступят в силу после сохранения</div>"
+    "</form>"
+    "<div class='card'>"
+    "<label>Управление</label>"
+    "<div class='actions'>"
+    "<form action='/start' method='POST'><button class='start'>Запуск</button></form>"
+    "<form action='/stop' method='POST'><button class='stop'>Стоп</button></form>"
+    "</div>"
+    "</div>"
+    "</div>"
+    "</div></body></html>";
+
+  return html;
+}
