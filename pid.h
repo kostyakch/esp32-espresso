@@ -10,6 +10,9 @@ public:
 
   void setSetpoint(float sp) { setpoint = sp; }
   float getSetpoint() const { return setpoint; }
+  float getKp() const { return Kp; }
+  float getKi() const { return Ki; }
+  float getKd() const { return Kd; }
 
   void reset() {
     integral = 0;
@@ -20,23 +23,23 @@ public:
   float compute(float input) {
     unsigned long now = millis();
     float dt = (now - lastTime) / 1000.0;
-    if (dt <= 0 || dt > 2.0) {
+    if (dt < minDt || dt > maxDt) {
       lastTime = now;
       return lastOutput;
     }
 
     float error = setpoint - input;
 
-    // --- Integral with anti-windup
-    integral += error * dt;
-    integral = constrain(integral, -iClamp, iClamp);
-
     float derivative = (error - lastError) / dt;
 
-    float output =
-      Kp * error +
-      Ki * integral +
-      Kd * derivative;
+    // --- Conditional integration to reduce windup at output limits
+    float nextIntegral = integral + error * dt;
+    float output = Kp * error + Ki * nextIntegral + Kd * derivative;
+
+    if (!((output > outMax && error > 0) || (output < outMin && error < 0))) {
+      integral = constrain(nextIntegral, -iClamp, iClamp);
+      output = Kp * error + Ki * integral + Kd * derivative;
+    }
 
     output = constrain(output, outMin, outMax);
 
@@ -48,6 +51,15 @@ public:
   }
 
   void setIntegralClamp(float clamp) { iClamp = clamp; }
+  void setDtLimits(float minSeconds, float maxSeconds) {
+    minDt = minSeconds;
+    maxDt = maxSeconds;
+  }
+  void setTunings(float kp, float ki, float kd) {
+    Kp = kp;
+    Ki = ki;
+    Kd = kd;
+  }
 
 private:
   float Kp, Ki, Kd;
@@ -60,4 +72,6 @@ private:
 
   float outMin, outMax;
   float iClamp = 50;   // защита от windup
+  float minDt = 0.05;  // 20 Hz max PID update rate
+  float maxDt = 2.0;
 };

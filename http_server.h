@@ -5,6 +5,15 @@
 #include "web_ui.h"
 
 extern void saveSettings();
+extern void autoTuneApplySetpoint(float sp);
+extern void autoTuneStart();
+extern void autoTuneStop();
+extern void setModeBrew();
+extern void setModeSteam();
+extern const char* getModeName();
+extern float getBrewSetpoint();
+extern float getSteamSetpoint();
+extern void setBrewSetpoint(float sp);
 
 static WebServer server(8080);
 
@@ -18,6 +27,9 @@ inline void httpSetup() {
       "{"
       "\"temp\":" + String(currentTemp,1) + ","
       "\"setpoint\":" + String(pid.getSetpoint(),1) + ","
+      "\"brew_sp\":" + String(getBrewSetpoint(),1) + ","
+      "\"steam_sp\":" + String(getSteamSetpoint(),1) + ","
+      "\"mode\":\"" + String(getModeName()) + "\","
       "\"state\":\"" + String(brewGetStateName()) + "\","
       "\"phase_ms\":" + String(brewGetPhaseTotalMs()) + ","
       "\"elapsed_ms\":" + String(brewGetElapsedMs()) + ","
@@ -27,7 +39,7 @@ inline void httpSetup() {
   });
 
   server.on("/set", HTTP_POST, []() {
-    if (server.hasArg("t")) pid.setSetpoint(server.arg("t").toFloat());
+    if (server.hasArg("t")) setBrewSetpoint(server.arg("t").toFloat());
     if (server.hasArg("pre")) preinfusionMs = server.arg("pre").toInt() * 1000;
     if (server.hasArg("pause")) pauseMs = server.arg("pause").toInt() * 1000;
     if (server.hasArg("brew")) brewMs = server.arg("brew").toInt() * 1000;
@@ -45,6 +57,30 @@ inline void httpSetup() {
 
   server.on("/stop", HTTP_POST, []() {
     brewStop();
+    server.sendHeader("Location", "/");
+    server.send(303);
+  });
+
+  server.on("/autotune_start", HTTP_POST, []() {
+    autoTuneStart();
+    server.sendHeader("Location", "/");
+    server.send(303);
+  });
+
+  server.on("/autotune_stop", HTTP_POST, []() {
+    autoTuneStop();
+    server.sendHeader("Location", "/");
+    server.send(303);
+  });
+
+  server.on("/mode_brew", HTTP_POST, []() {
+    setModeBrew();
+    server.sendHeader("Location", "/");
+    server.send(303);
+  });
+
+  server.on("/mode_steam", HTTP_POST, []() {
+    setModeSteam();
     server.sendHeader("Location", "/");
     server.send(303);
   });

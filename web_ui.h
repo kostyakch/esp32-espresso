@@ -7,6 +7,8 @@ extern PIDController pid;
 extern unsigned long brewMs;
 extern unsigned long preinfusionMs;
 extern unsigned long pauseMs;
+extern float getBrewSetpoint();
+extern float getSteamSetpoint();
 
 inline String renderHomePage() {
   String html =
@@ -37,8 +39,9 @@ inline String renderHomePage() {
     "<div class='wrap'>"
     "<div class='hero'>"
     "<h1>Lilit Espresso</h1>"
-    "<div class='temp'>" + String(currentTemp,1) + " C</div>"
-    "<div class='sub'>Заданная температура " + String(pid.getSetpoint(),1) + " C</div>"
+    "<div id='temp' class='temp'>" + String(currentTemp,1) + " C</div>"
+    "<div id='setpoint' class='sub'>Заданная температура " + String(pid.getSetpoint(),1) + " C</div>"
+    "<div id='mode' class='sub'>Режим: пролив</div>"
     "</div>"
     "<div class='grid'>"
     "<div class='card'>"
@@ -56,7 +59,8 @@ inline String renderHomePage() {
     "</div>"
     "<form class='card' action='/set' method='POST'>"
     "<label>Температура (C)</label>"
-    "<input name='t' inputmode='decimal' value='" + String(pid.getSetpoint(),1) + "'>"
+    "<input name='t' inputmode='decimal' value='" + String(getBrewSetpoint(),1) + "'>"
+    "<div class='note'>Пар: " + String(getSteamSetpoint(),1) + " C</div>"
     "<div class='row' style='margin-top:12px;'>"
     "<div><label>Предсмачивание (с)</label><input name='pre' inputmode='numeric' value='" + String(preinfusionMs/1000) + "'></div>"
     "<div><label>Пауза (с)</label><input name='pause' inputmode='numeric' value='" + String(pauseMs/1000) + "'></div>"
@@ -71,6 +75,14 @@ inline String renderHomePage() {
     "<form action='/start' method='POST'><button class='start'>Старт</button></form>"
     "<form action='/stop' method='POST'><button class='stop'>Стоп</button></form>"
     "</div>"
+    "<div class='actions' style='margin-top:10px;'>"
+    "<form action='/autotune_start' method='POST'><button class='save'>Autotune</button></form>"
+    "<form action='/autotune_stop' method='POST'><button class='stop'>Stop Autotune</button></form>"
+    "</div>"
+    "<div class='actions' style='margin-top:10px;'>"
+    "<form action='/mode_brew' method='POST'><button class='start'>Пролив</button></form>"
+    "<form action='/mode_steam' method='POST'><button class='save'>Пар</button></form>"
+    "</div>"
     "</div>"
     "</div>"
     "</div>"
@@ -80,6 +92,9 @@ inline String renderHomePage() {
     "function fmtMs(ms){const s=Math.max(0,Math.floor(ms/1000));const m=Math.floor(s/60);const r=s%60;return m+':' + (r<10?'0':'')+r;}"
     "async function tick(){"
     "try{const r=await fetch('/api/status');const d=await r.json();"
+    "document.getElementById('temp').textContent=d.temp.toFixed(1)+' C';"
+    "document.getElementById('setpoint').textContent='Заданная температура '+d.setpoint.toFixed(1)+' C';"
+    "document.getElementById('mode').textContent='Режим: '+(d.mode==='steam'?'пар':'пролив');"
     "document.getElementById('state').textContent=stateMap[d.state]||d.state;"
     "document.getElementById('phase').textContent=phaseMap[d.state]||'—';"
     "const showElapsed=d.state==='brew';"

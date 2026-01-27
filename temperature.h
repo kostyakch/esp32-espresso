@@ -22,6 +22,12 @@ static bool simEnabled = false;
 static float simTemp = 22.0;
 static unsigned long simLastMs = 0;
 
+// Simple thermal model for simulation
+static const float SIM_AMBIENT_C = 22.0f;
+static const float SIM_HEATER_W = 1200.0f;
+static const float SIM_THERMAL_MASS_J_PER_C = 1500.0f;
+static const float SIM_LOSS_W_PER_C = 6.0f;
+
 inline void temperatureSetup() {
   max31865.begin(MAX31865_2WIRE);
 }
@@ -67,14 +73,12 @@ inline void temperatureSimUpdate(float powerPercent) {
 
   simLastMs = now;
 
-  const float ambient = 22.0f;
-  const float heaterGain = 0.25f;
-  const float coolRate = 0.05f;
+  float heaterPower = SIM_HEATER_W * constrain(powerPercent, 0.0f, 100.0f) / 100.0f;
+  float lossPower = (simTemp - SIM_AMBIENT_C) * SIM_LOSS_W_PER_C;
+  float netPower = heaterPower - lossPower;
 
-  simTemp += (powerPercent / 100.0f) * heaterGain * dt;
-  simTemp += (ambient - simTemp) * coolRate * dt;
+  simTemp += (netPower / SIM_THERMAL_MASS_J_PER_C) * dt;
 
-  if (simTemp < ambient) {
-    simTemp = ambient;
-  }
+  if (simTemp < SIM_AMBIENT_C) simTemp = SIM_AMBIENT_C;
+  if (simTemp > MAX_SAFE_TEMP) simTemp = MAX_SAFE_TEMP;
 }
