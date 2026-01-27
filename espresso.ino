@@ -63,6 +63,7 @@ void setup() {
 
 void loop() {
   httpLoop();
+  brewLoop();
 
   unsigned long now = millis();
 
@@ -70,8 +71,11 @@ void loop() {
   bool ok = temperatureRead(temp);
 
   if (!ok) {
-    digitalWrite(SSR_HEATER_PIN, LOW);   // FAILSAFE
-    return;
+    if (!temperatureSimulated()) {
+      temperatureEnableSim(currentTemp);
+      Serial.println("Temperature: sensor missing, simulation enabled");
+    }
+    temp = temperatureSimGet();
   }
 
   currentTemp = temp;
@@ -81,8 +85,13 @@ void loop() {
   if (now - windowStart > pidWindow)
     windowStart += pidWindow;
 
-  digitalWrite(
-    SSR_HEATER_PIN,
-    (power / 100.0) * pidWindow > (now - windowStart)
-  );
+  if (temperatureSimulated()) {
+    digitalWrite(SSR_HEATER_PIN, LOW);
+    temperatureSimUpdate(power);
+  } else {
+    digitalWrite(
+      SSR_HEATER_PIN,
+      (power / 100.0) * pidWindow > (now - windowStart)
+    );
+  }
 }

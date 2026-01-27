@@ -10,7 +10,20 @@ static WebServer server(8080);
 
 inline void httpSetup() {
   server.on("/", HTTP_GET, []() {
-    server.send(200, "text/html", renderHomePage());
+    server.send(200, "text/html; charset=utf-8", renderHomePage());
+  });
+
+  server.on("/api/status", HTTP_GET, []() {
+    String json =
+      "{"
+      "\"temp\":" + String(currentTemp,1) + ","
+      "\"setpoint\":" + String(pid.getSetpoint(),1) + ","
+      "\"state\":\"" + String(brewGetStateName()) + "\","
+      "\"phase_ms\":" + String(brewGetPhaseTotalMs()) + ","
+      "\"elapsed_ms\":" + String(brewGetElapsedMs()) + ","
+      "\"remaining_ms\":" + String(brewGetRemainingMs()) +
+      "}";
+    server.send(200, "application/json", json);
   });
 
   server.on("/set", HTTP_POST, []() {
