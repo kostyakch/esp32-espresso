@@ -1,0 +1,16 @@
+# Arduino
+*.elf
+*.hex
+*.bin
+*.map
+
+# Arduino build
+/build/
+/out/
+*.tmp
+
+# macOS
+.idea
+.DS_Store
+.AppleDouble
+.LSOverride
