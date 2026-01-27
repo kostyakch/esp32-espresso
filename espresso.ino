@@ -8,13 +8,23 @@
 /* ===== PINS ===== */
 #define SSR_HEATER_PIN 26
 #define SSR_PUMP_PIN   27
-#define MODE_BUTTON_PIN 25
+#define MODE_BUTTON_PIN 32
 #define MODE_BUTTON_DEBOUNCE_MS 50
+#define BREW_BUTTON_PIN 33
+#define BREW_BUTTON_DEBOUNCE_MS 50
+#define BREW_BUTTON_LONG_MS 500
+
+// Wiring spec (ESP32 DevKit)
+// PT100 + MAX31865 (SPI): CS=GPIO5, MOSI=GPIO23, MISO=GPIO19, CLK=GPIO18, 3V3, GND
+// Heater SSR (RexC-100 SSR-40DA): IN+=GPIO26, IN-=GND, AC load in series with heater
+// Pump SSR (SSR-10DA/SSR-25DA): IN+=GPIO27, IN-=GND, AC load in series with pump
+// Brew button: GPIO33 -> GND (internal pull-up enabled)
+// Steam mode button: GPIO32 -> GND (internal pull-up enabled)
 
 #define DEFAULT_BREW_SETPOINT 93.0
 #define STEAM_SETPOINT 112.0
 
-float currentTemp = 32.0;
+float currentTemp = 85.0;
 
 PIDController pid(12.0, 0.4, 0.0);
 
@@ -55,6 +65,11 @@ static Mode currentMode = MODE_BREW;
 static float brewSetpoint = DEFAULT_BREW_SETPOINT;
 static bool lastButtonState = HIGH;
 static unsigned long lastButtonMs = 0;
+static bool lastBrewButtonState = HIGH;
+static unsigned long lastBrewButtonMs = 0;
+static unsigned long brewButtonPressMs = 0;
+static bool manualBrewActive = false;
+static bool brewLongActive = false;
 
 void autoTuneStop();
 void autoTuneApplySetpoint(float sp);
@@ -88,7 +103,13 @@ void applyMode(Mode mode) {
   } else {
     pid.setSetpoint(brewSetpoint);
   }
-  autoTuneStop();
+  autoTuneApplySetpoint(pid.getSetpoint());
+}
+
+void updatePump() {
+  BrewState state = brewGetState();
+  bool pumpOn = manualBrewActive || state == PREINFUSION || state == BREW;
+  digitalWrite(SSR_PUMP_PIN, pumpOn ? HIGH : LOW);
 }
 
 void setModeBrew() { applyMode(MODE_BREW); }
@@ -232,6 +253,7 @@ void setup() {
   pinMode(SSR_HEATER_PIN, OUTPUT);
   pinMode(SSR_PUMP_PIN, OUTPUT);
   pinMode(MODE_BUTTON_PIN, INPUT_PULLUP);
+  pinMode(BREW_BUTTON_PIN, INPUT_PULLUP);
   digitalWrite(SSR_HEATER_PIN, LOW);
   digitalWrite(SSR_PUMP_PIN, LOW);
 
@@ -272,6 +294,35 @@ void loop() {
   }
   lastButtonState = buttonState;
 
+  bool brewButtonState = digitalRead(BREW_BUTTON_PIN);
+  if (brewButtonState != lastBrewButtonState) {
+    lastBrewButtonMs = now;
+  }
+  if ((now - lastBrewButtonMs) > BREW_BUTTON_DEBOUNCE_MS) {
+    if (lastBrewButtonState == HIGH && brewButtonState == LOW) {
+      brewButtonPressMs = now;
+      brewLongActive = false;
+    } else if (lastBrewButtonState == LOW && brewButtonState == HIGH) {
+      unsigned long heldMs = now - brewButtonPressMs;
+      if (heldMs < BREW_BUTTON_LONG_MS) {
+        if (brewGetState() == IDLE) {
+          brewStart();
+        } else {
+          brewStop();
+        }
+      }
+      if (brewLongActive) {
+        manualBrewActive = false;
+      }
+    } else if (brewButtonState == LOW && !brewLongActive &&
+               (now - brewButtonPressMs) >= BREW_BUTTON_LONG_MS) {
+      brewLongActive = true;
+      manualBrewActive = true;
+      brewStop();
+    }
+  }
+  lastBrewButtonState = brewButtonState;
+
   float temp;
   bool ok = temperatureRead(temp);
 
@@ -302,5 +353,6 @@ void loop() {
     );
   }
 
+  updatePump();
   logTelemetry(power);
 }
