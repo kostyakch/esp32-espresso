@@ -64,6 +64,7 @@ enum Mode {
 static Mode currentMode = MODE_BREW;
 static float brewSetpoint = DEFAULT_BREW_SETPOINT;
 static bool lastButtonState = HIGH;
+static bool lastButtonReading = HIGH;
 static unsigned long lastButtonMs = 0;
 static bool lastBrewButtonState = HIGH;
 static bool lastBrewButtonReading = HIGH;
@@ -285,16 +286,17 @@ void loop() {
     if (cmd == "stop" || cmd == "s") autoTuneStop();
   }
 
-  bool buttonState = digitalRead(MODE_BUTTON_PIN);
-  if (buttonState != lastButtonState) {
+  bool buttonReading = digitalRead(MODE_BUTTON_PIN);
+  if (buttonReading != lastButtonReading) {
     lastButtonMs = now;
+    lastButtonReading = buttonReading;
   }
   if ((now - lastButtonMs) > MODE_BUTTON_DEBOUNCE_MS) {
-    if (lastButtonState == HIGH && buttonState == LOW) {
-      applyMode(currentMode == MODE_BREW ? MODE_STEAM : MODE_BREW);
+    if (lastButtonState != buttonReading) {
+      lastButtonState = buttonReading;
+      applyMode(lastButtonState == LOW ? MODE_STEAM : MODE_BREW);
     }
   }
-  lastButtonState = buttonState;
 
   bool brewButtonReading = digitalRead(BREW_BUTTON_PIN);
   if (brewButtonReading != lastBrewButtonReading) {
