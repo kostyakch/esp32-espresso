@@ -14,6 +14,7 @@ extern const char* getModeName();
 extern float getBrewSetpoint();
 extern float getSteamSetpoint();
 extern void setBrewSetpoint(float sp);
+extern bool isManualBrewActive();
 
 static WebServer server(8080);
 
@@ -31,6 +32,7 @@ inline void httpSetup() {
       "\"steam_sp\":" + String(getSteamSetpoint(),1) + ","
       "\"mode\":\"" + String(getModeName()) + "\","
       "\"state\":\"" + String(brewGetStateName()) + "\","
+      "\"manual\":" + String(isManualBrewActive() ? 1 : 0) + ","
       "\"phase_ms\":" + String(brewGetPhaseTotalMs()) + ","
       "\"elapsed_ms\":" + String(brewGetElapsedMs()) + ","
       "\"remaining_ms\":" + String(brewGetRemainingMs()) +

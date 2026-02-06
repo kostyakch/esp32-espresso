@@ -11,7 +11,7 @@
 #define MODE_BUTTON_PIN 32
 #define MODE_BUTTON_DEBOUNCE_MS 50
 #define BREW_BUTTON_PIN 33
-#define BREW_BUTTON_DEBOUNCE_MS 50
+#define BREW_BUTTON_DEBOUNCE_MS 10
 #define BREW_BUTTON_LONG_MS 500
 
 // Wiring spec (ESP32 DevKit)
@@ -66,6 +66,7 @@ static float brewSetpoint = DEFAULT_BREW_SETPOINT;
 static bool lastButtonState = HIGH;
 static unsigned long lastButtonMs = 0;
 static bool lastBrewButtonState = HIGH;
+static bool lastBrewButtonReading = HIGH;
 static unsigned long lastBrewButtonMs = 0;
 static unsigned long brewButtonPressMs = 0;
 static bool manualBrewActive = false;
@@ -118,6 +119,7 @@ bool isSteamMode() { return currentMode == MODE_STEAM; }
 const char* getModeName() { return currentMode == MODE_STEAM ? "steam" : "brew"; }
 float getBrewSetpoint() { return brewSetpoint; }
 float getSteamSetpoint() { return STEAM_SETPOINT; }
+bool isManualBrewActive() { return manualBrewActive; }
 void setBrewSetpoint(float sp) {
   brewSetpoint = sp;
   if (currentMode == MODE_BREW) {
@@ -294,34 +296,41 @@ void loop() {
   }
   lastButtonState = buttonState;
 
-  bool brewButtonState = digitalRead(BREW_BUTTON_PIN);
-  if (brewButtonState != lastBrewButtonState) {
+  bool brewButtonReading = digitalRead(BREW_BUTTON_PIN);
+  if (brewButtonReading != lastBrewButtonReading) {
     lastBrewButtonMs = now;
+    lastBrewButtonReading = brewButtonReading;
   }
   if ((now - lastBrewButtonMs) > BREW_BUTTON_DEBOUNCE_MS) {
-    if (lastBrewButtonState == HIGH && brewButtonState == LOW) {
-      brewButtonPressMs = now;
-      brewLongActive = false;
-    } else if (lastBrewButtonState == LOW && brewButtonState == HIGH) {
-      unsigned long heldMs = now - brewButtonPressMs;
-      if (heldMs < BREW_BUTTON_LONG_MS) {
-        if (brewGetState() == IDLE) {
-          brewStart();
+    if (lastBrewButtonState != brewButtonReading) {
+      lastBrewButtonState = brewButtonReading;
+      if (lastBrewButtonState == LOW) {
+        brewButtonPressMs = now;
+        brewLongActive = false;
+        Serial.println("Brew button: down");
+      } else {
+        if (!brewLongActive) {
+          if (brewGetState() == IDLE) {
+            brewStart();
+            Serial.println("Brew button: short -> start");
+          } else {
+            brewStop();
+            Serial.println("Brew button: short -> stop");
+          }
         } else {
-          brewStop();
+          manualBrewActive = false;
+          Serial.println("Brew button: long -> release");
         }
       }
-      if (brewLongActive) {
-        manualBrewActive = false;
-      }
-    } else if (brewButtonState == LOW && !brewLongActive &&
-               (now - brewButtonPressMs) >= BREW_BUTTON_LONG_MS) {
-      brewLongActive = true;
-      manualBrewActive = true;
-      brewStop();
     }
   }
-  lastBrewButtonState = brewButtonState;
+  if (lastBrewButtonState == LOW && !brewLongActive &&
+      (now - brewButtonPressMs) > BREW_BUTTON_LONG_MS) {
+    brewLongActive = true;
+    manualBrewActive = true;
+    brewStop();
+    Serial.println("Brew button: long -> hold");
+  }
 
   float temp;
   bool ok = temperatureRead(temp);
