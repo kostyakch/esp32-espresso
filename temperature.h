@@ -2,7 +2,7 @@
 #include <Adafruit_MAX31865.h>
 
 /* ===== PINS ===== */
-#define MAX31865_CS   5
+#define MAX31865_CS   15
 #define MAX31865_MOSI 23
 #define MAX31865_MISO 19
 #define MAX31865_CLK  18
@@ -18,6 +18,10 @@ static Adafruit_MAX31865 max31865(
   MAX31865_CLK
 );
 
+static uint8_t lastFault = 0;
+static uint16_t lastRtd = 0;
+static float lastRatio = 0.0f;
+static float lastTempRaw = 0.0f;
 static bool simEnabled = false;
 static float simTemp = 22.0;
 static unsigned long simLastMs = 0;
@@ -33,12 +37,40 @@ inline void temperatureSetup() {
 }
 
 inline bool temperatureRead(float &outTemp) {
-  outTemp = max31865.temperature(RNOMINAL, RREF);
+  lastFault = 0;
+  lastRtd = max31865.readRTD();
+  lastRatio = lastRtd;
+  lastRatio /= 32768.0f;
+  uint8_t fault = max31865.readFault();
+  if (fault) {
+    lastFault = fault;
+    max31865.clearFault();
+    return false;
+  }
+
+  lastTempRaw = max31865.temperature(RNOMINAL, RREF);
+  outTemp = lastTempRaw;
 
   if (isnan(outTemp)) return false;
   if (outTemp < -10 || outTemp > MAX_SAFE_TEMP) return false;
 
   return true;
+}
+
+inline uint8_t temperatureLastFault() {
+  return lastFault;
+}
+
+inline uint16_t temperatureLastRtd() {
+  return lastRtd;
+}
+
+inline float temperatureLastRatio() {
+  return lastRatio;
+}
+
+inline float temperatureLastTempRaw() {
+  return lastTempRaw;
 }
 
 inline void temperatureEnableSim(float startTemp) {

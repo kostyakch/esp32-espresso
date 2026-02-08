@@ -24,7 +24,7 @@
 #define DEFAULT_BREW_SETPOINT 93.0
 #define STEAM_SETPOINT 112.0
 
-float currentTemp = 85.0;
+float currentTemp = 25.0;
 
 PIDController pid(12.0, 0.4, 0.0);
 
@@ -85,7 +85,7 @@ void logTelemetry(float power) {
 
   float error = pid.getSetpoint() - currentTemp;
   Serial.printf(
-    "temp=%.2f sp=%.2f err=%.2f power=%.1f sim=%d tune=%d kp=%.2f ki=%.3f kd=%.2f\n",
+    "temp=%.2f sp=%.2f err=%.2f power=%.1f sim=%d tune=%d kp=%.2f ki=%.3f kd=%.2f rtd=%u ratio=%.6f r_ohms=%.2f raw=%.2f fault=0x%02X\n",
     currentTemp,
     pid.getSetpoint(),
     error,
@@ -94,8 +94,42 @@ void logTelemetry(float power) {
     autoTune.active ? 1 : 0,
     pid.getKp(),
     pid.getKi(),
-    pid.getKd()
+    pid.getKd(),
+    temperatureLastRtd(),
+    temperatureLastRatio(),
+    temperatureLastRatio() * RREF,
+    temperatureLastTempRaw(),
+    temperatureLastFault()
   );
+}
+
+void printMax31865Diag(const char *label, max31865_numwires_t wires) {
+  max31865.begin(wires);
+  delay(10);
+  uint16_t rtd = max31865.readRTD();
+  float ratio = rtd / 32768.0f;
+  float temp = max31865.temperature(RNOMINAL, RREF);
+  uint8_t fault = max31865.readFault();
+  max31865.clearFault();
+
+  Serial.printf(
+    "Diag %s: rtd=%u ratio=%.6f r_ohms=%.2f temp=%.2f fault=0x%02X\n",
+    label,
+    rtd,
+    ratio,
+    ratio * RREF,
+    temp,
+    fault
+  );
+}
+
+void runMax31865Diag() {
+  Serial.println("MAX31865 diag: starting");
+  printMax31865Diag("2-wire", MAX31865_2WIRE);
+  printMax31865Diag("3-wire", MAX31865_3WIRE);
+  printMax31865Diag("4-wire", MAX31865_4WIRE);
+  max31865.begin(MAX31865_3WIRE);
+  Serial.println("MAX31865 diag: done");
 }
 
 void applyMode(Mode mode) {
@@ -284,6 +318,7 @@ void loop() {
     cmd.trim();
     if (cmd == "autotune" || cmd == "a") autoTuneStart();
     if (cmd == "stop" || cmd == "s") autoTuneStop();
+    if (cmd == "diag" || cmd == "d") runMax31865Diag();
   }
 
   bool buttonReading = digitalRead(MODE_BUTTON_PIN);
@@ -339,6 +374,27 @@ void loop() {
 
   if (!ok) {
     if (!temperatureSimulated()) {
+      uint8_t fault = temperatureLastFault();
+      if (fault) {
+        Serial.printf(
+          "Temperature fault: 0x%02X (H=%d L=%d R=%d R0=%d R1=%d O=%d)\n",
+          fault,
+          (fault & 0x80) ? 1 : 0,
+          (fault & 0x40) ? 1 : 0,
+          (fault & 0x20) ? 1 : 0,
+          (fault & 0x10) ? 1 : 0,
+          (fault & 0x08) ? 1 : 0,
+          (fault & 0x04) ? 1 : 0
+        );
+      } else {
+        Serial.printf(
+          "Temperature: invalid reading (rtd=%u ratio=%.6f raw=%.2f r_ohms=%.2f)\n",
+          temperatureLastRtd(),
+          temperatureLastRatio(),
+          temperatureLastTempRaw(),
+          temperatureLastRatio() * RREF
+        );
+      }
       temperatureEnableSim(currentTemp);
       Serial.println("Temperature: sensor missing, simulation enabled");
     }
