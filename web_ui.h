@@ -9,6 +9,8 @@ extern unsigned long preinfusionMs;
 extern unsigned long pauseMs;
 extern float getBrewSetpoint();
 extern float getSteamSetpoint();
+extern bool emergencyStop;
+extern String emergencyReason;
 
 inline String renderHomePage() {
   String html =
@@ -35,8 +37,12 @@ inline String renderHomePage() {
     ".start{background:var(--accent2);}"
     ".stop{background:#8d2e2e;}"
     ".note{font-size:12px;color:var(--muted);margin-top:8px;}"
+    ".emergency{background:#8d2e2e;color:#fff;padding:15px;border-radius:14px;margin-bottom:16px;font-weight:700;text-align:center;border:2px solid #ff0000;}"
     "</style></head><body>"
     "<div class='wrap'>"
+    "<div id='emergency_banner' class='emergency' style='display:" + String(emergencyStop ? "block" : "none") + "'>"
+    "ВНИМАНИЕ: АВАРИЙНАЯ ОСТАНОВКА<br><small id='emergency_text'>" + emergencyReason + "</small>"
+    "</div>"
     "<div class='hero'>"
     "<h1>Lilit Espresso</h1>"
     "<div id='temp' class='temp'>" + String(currentTemp,1) + " C</div>"
@@ -98,6 +104,12 @@ inline String renderHomePage() {
     "function fmtMs(ms){const s=Math.max(0,Math.floor(ms/1000));const m=Math.floor(s/60);const r=s%60;return m+':' + (r<10?'0':'')+r;}"
     "async function tick(){"
     "try{const r=await fetch('/api/status');const d=await r.json();"
+    "if(d.emergency){"
+    "document.getElementById('emergency_banner').style.display='block';"
+    "document.getElementById('emergency_text').textContent=d.emergency_reason;"
+    "}else{"
+    "document.getElementById('emergency_banner').style.display='none';"
+    "}"
     "document.getElementById('temp').textContent=d.temp.toFixed(1)+' C';"
     "document.getElementById('setpoint').textContent='Заданная температура '+d.setpoint.toFixed(1)+' C';"
     "document.getElementById('mode').textContent='Режим: '+(d.mode==='steam'?'пар':'пролив');"

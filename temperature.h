@@ -52,7 +52,8 @@ inline bool temperatureRead(float &outTemp) {
   outTemp = lastTempRaw;
 
   if (isnan(outTemp)) return false;
-  if (outTemp < -10 || outTemp > MAX_SAFE_TEMP) return false;
+  // We allow readings above MAX_SAFE_TEMP here so the main loop can detect and handle the over-temp condition
+  if (outTemp < -10 || outTemp > 200.0) return false;
 
   return true;
 }

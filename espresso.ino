@@ -73,6 +73,19 @@ static unsigned long brewButtonPressMs = 0;
 static bool manualBrewActive = false;
 static bool brewLongActive = false;
 
+bool emergencyStop = false;
+String emergencyReason = "";
+
+void triggerEmergencyStop(String reason) {
+  if (!emergencyStop) {
+    emergencyStop = true;
+    emergencyReason = reason;
+    digitalWrite(SSR_HEATER_PIN, LOW);
+    digitalWrite(SSR_PUMP_PIN, LOW);
+    Serial.println("!!! EMERGENCY STOP: " + reason + " !!!");
+  }
+}
+
 void autoTuneStop();
 void autoTuneApplySetpoint(float sp);
 
@@ -308,6 +321,18 @@ void setup() {
 }
 
 void loop() {
+  if (emergencyStop) {
+    digitalWrite(SSR_HEATER_PIN, LOW);
+    digitalWrite(SSR_PUMP_PIN, LOW);
+    static unsigned long lastErrorMs = 0;
+    if (millis() - lastErrorMs > 2000) {
+      Serial.println("!!! SYSTEM HALTED: " + emergencyReason + " !!!");
+      lastErrorMs = millis();
+    }
+    yield();
+    return;
+  }
+
   ArduinoOTA.handle();
   if (otaInProgress) {
     digitalWrite(SSR_HEATER_PIN, LOW);
@@ -413,6 +438,10 @@ void loop() {
   if (!ok) temp = temperatureSimGet();
 
   currentTemp = temp;
+
+  if (currentTemp > MAX_SAFE_TEMP) {
+    triggerEmergencyStop("Temperature too high: " + String(currentTemp) + "°C");
+  }
 
   float power = autoTune.active
     ? autoTuneUpdate(currentTemp)

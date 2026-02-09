@@ -41,7 +41,9 @@ inline void httpSetup() {
       "\"manual\":" + String(isManualBrewActive() ? 1 : 0) + ","
       "\"phase_ms\":" + String(brewGetPhaseTotalMs()) + ","
       "\"elapsed_ms\":" + String(brewGetElapsedMs()) + ","
-      "\"remaining_ms\":" + String(brewGetRemainingMs()) +
+      "\"remaining_ms\":" + String(brewGetRemainingMs()) + ","
+      "\"emergency\":" + String(emergencyStop ? 1 : 0) + ","
+      "\"emergency_reason\":\"" + emergencyReason + "\""
       "}";
     server.send(200, "application/json", json);
   });
