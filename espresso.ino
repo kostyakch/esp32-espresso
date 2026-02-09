@@ -308,6 +308,16 @@ void setup() {
 }
 
 void loop() {
+  ArduinoOTA.handle();
+  if (otaInProgress) {
+    digitalWrite(SSR_HEATER_PIN, LOW);
+    digitalWrite(SSR_PUMP_PIN, LOW);
+
+    delay(250);
+    yield();
+    return;
+  }
+
   httpLoop();
   brewLoop();
 
@@ -400,6 +410,7 @@ void loop() {
     }
     temp = temperatureSimGet();
   }
+  if (!ok) temp = temperatureSimGet();
 
   currentTemp = temp;
 

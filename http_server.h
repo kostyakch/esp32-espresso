@@ -18,6 +18,12 @@ extern bool isManualBrewActive();
 
 static WebServer server(8080);
 
+extern bool otaInProgress;
+inline void httpStop() {
+  server.stop();
+  Serial.println("HTTP: Server stopped");
+}
+
 inline void httpSetup() {
   server.on("/", HTTP_GET, []() {
     server.send(200, "text/html; charset=utf-8", renderHomePage());
@@ -91,5 +97,6 @@ inline void httpSetup() {
 }
 
 inline void httpLoop() {
+  if (otaInProgress) return;
   server.handleClient();
 }
