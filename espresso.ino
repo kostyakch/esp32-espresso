@@ -28,7 +28,7 @@ float currentTemp = 25.0;
 
 PIDController pid(12.0, 0.4, 0.0);
 
-const unsigned long pidWindow = 1000;
+const unsigned long pidWindow = 500;
 unsigned long windowStart = 0;
 unsigned long lastTelemetryMs = 0;
 
