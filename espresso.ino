@@ -23,8 +23,12 @@
 
 #define DEFAULT_BREW_SETPOINT 93.0
 #define STEAM_SETPOINT 112.0
-/* Ограничение мощности нагрева во время пролива — меньше перелёт когда поток останавливается */
-#define BREW_HEATER_CAP 65.0
+/* После остановки пролива 30 с ограничиваем мощность 50%, чтобы не перегревать */
+#define POST_BREW_COOLDOWN_MS 30000UL
+#define POST_BREW_CAP         50.0f
+/* Когда пролив выключен и температура близка к уставке — греем очень аккуратно (по чуть-чуть) */
+#define NEAR_SETPOINT_DEG  2.0f
+#define NEAR_SETPOINT_CAP  28.0f
 
 float currentTemp = 25.0;
 
@@ -33,6 +37,8 @@ PIDController pid(12.0, 0.25, 0.0);  // Ki 0.25 — меньше перелёт,
 const unsigned long pidWindow = 500;
 unsigned long windowStart = 0;
 unsigned long lastTelemetryMs = 0;
+static unsigned long lastBrewEndMs = 0;
+static bool wasInBrew = false;
 
 struct AutoTuneState {
   bool active = false;
@@ -456,9 +462,22 @@ void loop() {
     ? autoTuneUpdate(currentTemp)
     : pid.compute(currentTemp);
 
-  /* Во время пролива не даём полную мощность — иначе после остановки воды перелёт до 100+ °C */
-  if (brewGetState() != IDLE || manualBrewActive)
-    power = min(power, (float)BREW_HEATER_CAP);
+  bool inBrew = (brewGetState() != IDLE || manualBrewActive);
+  if (wasInBrew && !inBrew)
+    lastBrewEndMs = now;
+  wasInBrew = inBrew;
+
+  if (inBrew) {
+    /* Во время пролива — нагрев до 100% по запросу PID */
+  } else if (lastBrewEndMs != 0 && (now - lastBrewEndMs) < POST_BREW_COOLDOWN_MS) {
+    /* 30 с после остановки пролива — мощность не выше 50%, чтобы не перегревать */
+    power = min(power, (float)POST_BREW_CAP);
+  } else {
+    /* Пролив выключен и температура рядом с уставкой — включаем нагрев по чуть-чуть */
+    float err = pid.getSetpoint() - currentTemp;
+    if (err > 0 && err <= NEAR_SETPOINT_DEG)
+      power = min(power, (float)NEAR_SETPOINT_CAP);
+  }
 
   if (now - windowStart > pidWindow)
     windowStart += pidWindow;
