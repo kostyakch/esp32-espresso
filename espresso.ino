@@ -11,8 +11,9 @@
 #define MODE_BUTTON_PIN 32
 #define MODE_BUTTON_DEBOUNCE_MS 50
 #define BREW_BUTTON_PIN 33
-#define BREW_BUTTON_DEBOUNCE_MS 10
+#define BREW_BUTTON_DEBOUNCE_MS 80   /* 80 ms — отсекает помехи от помпы/SSR */
 #define BREW_BUTTON_LONG_MS 500
+#define BREW_BUTTON_MIN_PRESS_MS 50  /* короткое нажатие учитываем только если кнопка была внизу не меньше 50 ms */
 
 // Wiring spec (ESP32 DevKit)
 // PT100 + MAX31865 (SPI): CS=GPIO5, MOSI=GPIO23, MISO=GPIO19, CLK=GPIO18, 3V3, GND
@@ -436,12 +437,15 @@ void loop() {
         Serial.println("Brew button: down");
       } else {
         if (!brewLongActive) {
-          if (brewGetState() == IDLE) {
-            brewStart();
-            Serial.println("Brew button: short -> start");
-          } else {
-            brewStop();
-            Serial.println("Brew button: short -> stop");
+          unsigned long pressDuration = now - brewButtonPressMs;
+          if (pressDuration >= BREW_BUTTON_MIN_PRESS_MS) {
+            if (brewGetState() == IDLE) {
+              brewStart();
+              Serial.println("Brew button: short -> start");
+            } else {
+              brewStop();
+              Serial.println("Brew button: short -> stop");
+            }
           }
         } else {
           manualBrewActive = false;
