@@ -32,7 +32,7 @@ inline void httpSetup() {
   server.on("/api/status", HTTP_GET, []() {
     String json =
       "{"
-      "\"temp\":" + String(currentTemp,1) + ","
+      "\"temp\":" + String(currentTemp, 1) + ","
       "\"setpoint\":" + String(pid.getSetpoint(),1) + ","
       "\"brew_sp\":" + String(getBrewSetpoint(),1) + ","
       "\"steam_sp\":" + String(getSteamSetpoint(),1) + ","

@@ -45,7 +45,7 @@ inline String renderHomePage() {
     "</div>"
     "<div class='hero'>"
     "<h1>Lilit Espresso</h1>"
-    "<div id='temp' class='temp'>" + String(currentTemp,1) + " C</div>"
+    "<div id='temp' class='temp'>" + String(currentTemp, 1) + " C</div>"
     "<div id='setpoint' class='sub'>Заданная температура " + String(pid.getSetpoint(),1) + " C</div>"
     "<div id='mode' class='sub'>Режим: пролив</div>"
     "</div>"

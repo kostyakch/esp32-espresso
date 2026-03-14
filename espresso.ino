@@ -22,7 +22,7 @@
 // Steam mode button: GPIO32 -> GND (internal pull-up enabled)
 
 #define DEFAULT_BREW_SETPOINT 93.0
-#define STEAM_SETPOINT 112.0
+#define STEAM_SETPOINT 115.0
 /* После остановки пролива 30 с ограничиваем мощность 50%, чтобы не перегревать */
 #define POST_BREW_COOLDOWN_MS 30000UL
 #define POST_BREW_CAP         50.0f
