@@ -32,14 +32,16 @@ public:
 
     float derivative = (error - lastError) / dt;
 
-    // --- Conditional integration to reduce windup at output limits
-    float nextIntegral = integral + error * dt;
-    float output = Kp * error + Ki * nextIntegral + Kd * derivative;
-
-    if (!((output > outMax && error > 0) || (output < outMin && error < 0))) {
-      integral = constrain(nextIntegral, -iClamp, iClamp);
-      output = Kp * error + Ki * integral + Kd * derivative;
+    // When at or above setpoint, zero integral so we don't overshoot or hold temp above setpoint
+    if (error <= 0) integral = 0;
+    else {
+      // Conditional integration when below setpoint to reduce windup at output limits
+      float nextIntegral = integral + error * dt;
+      float output = Kp * error + Ki * nextIntegral + Kd * derivative;
+      if (!(output > outMax && error > 0))
+        integral = constrain(nextIntegral, -iClamp, iClamp);
     }
+    float output = Kp * error + Ki * integral + Kd * derivative;
 
     output = constrain(output, outMin, outMax);
 

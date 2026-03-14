@@ -1,8 +1,8 @@
 #pragma once
 #include <Adafruit_MAX31865.h>
 
-/* ===== PINS ===== */
-#define MAX31865_CS   15
+/* ===== PINS (must match wiring: README says CS=GPIO5) ===== */
+#define MAX31865_CS   5
 #define MAX31865_MOSI 23
 #define MAX31865_MISO 19
 #define MAX31865_CLK  18
@@ -10,6 +10,8 @@
 #define RNOMINAL 100.0
 #define RREF     430.0
 #define MAX_SAFE_TEMP 120.0   // °C
+/* 2-wire: MAX31865_2WIRE, 3-wire: MAX31865_3WIRE, 4-wire: MAX31865_4WIRE. Diag showed 2/4-wire OK, 3-wire wrong for this board. */
+#define MAX31865_WIRES MAX31865_2WIRE
 
 static Adafruit_MAX31865 max31865(
   MAX31865_CS,
@@ -33,7 +35,7 @@ static const float SIM_THERMAL_MASS_J_PER_C = 1500.0f;
 static const float SIM_LOSS_W_PER_C = 6.0f;
 
 inline void temperatureSetup() {
-  max31865.begin(MAX31865_2WIRE);
+  max31865.begin(MAX31865_WIRES);
 }
 
 inline bool temperatureRead(float &outTemp) {
@@ -78,6 +80,10 @@ inline void temperatureEnableSim(float startTemp) {
   simEnabled = true;
   simTemp = startTemp;
   simLastMs = millis();
+}
+
+inline void temperatureDisableSim() {
+  simEnabled = false;
 }
 
 inline bool temperatureSimulated() {

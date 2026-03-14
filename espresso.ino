@@ -23,10 +23,12 @@
 
 #define DEFAULT_BREW_SETPOINT 93.0
 #define STEAM_SETPOINT 112.0
+/* Ограничение мощности нагрева во время пролива — меньше перелёт когда поток останавливается */
+#define BREW_HEATER_CAP 65.0
 
 float currentTemp = 25.0;
 
-PIDController pid(12.0, 0.4, 0.0);
+PIDController pid(12.0, 0.25, 0.0);  // Ki 0.25 — меньше перелёт, чем при 0.4
 
 const unsigned long pidWindow = 500;
 unsigned long windowStart = 0;
@@ -141,7 +143,7 @@ void runMax31865Diag() {
   printMax31865Diag("2-wire", MAX31865_2WIRE);
   printMax31865Diag("3-wire", MAX31865_3WIRE);
   printMax31865Diag("4-wire", MAX31865_4WIRE);
-  max31865.begin(MAX31865_3WIRE);
+  max31865.begin(MAX31865_WIRES);
   Serial.println("MAX31865 diag: done");
 }
 
@@ -152,6 +154,7 @@ void applyMode(Mode mode) {
   } else {
     pid.setSetpoint(brewSetpoint);
   }
+  pid.reset();  // clear integral when mode/setpoint changes
   autoTuneApplySetpoint(pid.getSetpoint());
 }
 
@@ -172,6 +175,7 @@ void setBrewSetpoint(float sp) {
   brewSetpoint = sp;
   if (currentMode == MODE_BREW) {
     pid.setSetpoint(brewSetpoint);
+    pid.reset();  // avoid overshoot: clear integral when setpoint changes
   }
   autoTuneApplySetpoint(pid.getSetpoint());
 }
@@ -407,6 +411,10 @@ void loop() {
   float temp;
   bool ok = temperatureRead(temp);
 
+  if (ok && temperatureSimulated()) {
+    temperatureDisableSim();
+    Serial.println("Temperature: sensor OK, simulation disabled");
+  }
   if (!ok) {
     if (!temperatureSimulated()) {
       uint8_t fault = temperatureLastFault();
@@ -429,6 +437,7 @@ void loop() {
           temperatureLastTempRaw(),
           temperatureLastRatio() * RREF
         );
+        Serial.println("  -> Check: CS/MOSI/MISO/CLK/3V3/GND. Send 'diag' for 2/3/4-wire test. In temperature.h use MAX31865_3WIRE for 3-wire PT100.");
       }
       temperatureEnableSim(currentTemp);
       Serial.println("Temperature: sensor missing, simulation enabled");
@@ -446,6 +455,10 @@ void loop() {
   float power = autoTune.active
     ? autoTuneUpdate(currentTemp)
     : pid.compute(currentTemp);
+
+  /* Во время пролива не даём полную мощность — иначе после остановки воды перелёт до 100+ °C */
+  if (brewGetState() != IDLE || manualBrewActive)
+    power = min(power, (float)BREW_HEATER_CAP);
 
   if (now - windowStart > pidWindow)
     windowStart += pidWindow;
