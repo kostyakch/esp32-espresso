@@ -23,12 +23,19 @@
 
 #define DEFAULT_BREW_SETPOINT 93.0
 #define STEAM_SETPOINT 115.0
-/* После остановки пролива 30 с ограничиваем мощность 50%, чтобы не перегревать */
+/* После остановки пролива 30 с ограничиваем мощность, чтобы не перегревать (лимит зависит от уставки) */
 #define POST_BREW_COOLDOWN_MS 30000UL
-#define POST_BREW_CAP         50.0f
+#define POST_BREW_CAP         50.0f   /* при высокой уставке (пар/пролив) */
+#define POST_BREW_CAP_LOW     20.0f   /* при низкой уставке (напр. 55 °C) */
+#define POST_BREW_CAP_MID     35.0f   /* при средней */
+#define POST_BREW_SETPOINT_LOW  65.0f
+#define POST_BREW_SETPOINT_MID  80.0f
 /* Когда пролив выключен и температура близка к уставке — греем очень аккуратно (по чуть-чуть) */
 #define NEAR_SETPOINT_DEG  2.0f
 #define NEAR_SETPOINT_CAP  28.0f
+#define TEMP_EMA_ALPHA  0.3f
+#define TEMP_HISTORY_SIZE  60
+#define TEMP_HISTORY_INTERVAL_MS  1000UL
 
 float currentTemp = 25.0;
 
@@ -39,6 +46,12 @@ unsigned long windowStart = 0;
 unsigned long lastTelemetryMs = 0;
 static unsigned long lastBrewEndMs = 0;
 static bool wasInBrew = false;
+static float tempFiltered = 0.0f;
+static bool tempFilterInitialized = false;
+static float tempHistory[TEMP_HISTORY_SIZE];
+static int tempHistoryIndex = 0;
+static int tempHistoryCount = 0;
+static unsigned long lastHistoryMs = 0;
 
 struct AutoTuneState {
   bool active = false;
@@ -307,6 +320,16 @@ void saveSettings() {
   prefs.end();
 }
 
+String getTempHistoryJson() {
+  String s = "[";
+  for (int i = 0; i < tempHistoryCount; i++) {
+    if (i) s += ",";
+    s += String(tempHistory[(tempHistoryIndex + i) % TEMP_HISTORY_SIZE], 1);
+  }
+  s += "]";
+  return s;
+}
+
 void setup() {
   Serial.begin(115200);
   Serial.setTimeout(10);
@@ -421,6 +444,7 @@ void loop() {
 
   if (ok && temperatureSimulated()) {
     temperatureDisableSim();
+    tempFilterInitialized = false;
     Serial.println("Temperature: sensor OK, simulation disabled");
   }
   if (!ok) {
@@ -454,7 +478,24 @@ void loop() {
   }
   if (!ok) temp = temperatureSimGet();
 
-  currentTemp = temp;
+  if (ok) {
+    if (!tempFilterInitialized) {
+      tempFiltered = temp;
+      tempFilterInitialized = true;
+    } else {
+      tempFiltered = TEMP_EMA_ALPHA * temp + (1.0f - TEMP_EMA_ALPHA) * tempFiltered;
+    }
+    currentTemp = tempFiltered;
+  } else {
+    currentTemp = temp;
+  }
+
+  if (now - lastHistoryMs >= TEMP_HISTORY_INTERVAL_MS) {
+    lastHistoryMs = now;
+    tempHistory[tempHistoryIndex] = currentTemp;
+    tempHistoryIndex = (tempHistoryIndex + 1) % TEMP_HISTORY_SIZE;
+    if (tempHistoryCount < TEMP_HISTORY_SIZE) tempHistoryCount++;
+  }
 
   if (currentTemp > MAX_SAFE_TEMP) {
     triggerEmergencyStop("Temperature too high: " + String(currentTemp) + "°C");
@@ -472,8 +513,11 @@ void loop() {
   if (inBrew) {
     /* Во время пролива — нагрев до 100% по запросу PID */
   } else if (lastBrewEndMs != 0 && (now - lastBrewEndMs) < POST_BREW_COOLDOWN_MS) {
-    /* 30 с после остановки пролива — мощность не выше 50%, чтобы не перегревать */
-    power = min(power, (float)POST_BREW_CAP);
+    float sp = pid.getSetpoint();
+    float postCap = (sp <= POST_BREW_SETPOINT_LOW) ? POST_BREW_CAP_LOW
+      : (sp <= POST_BREW_SETPOINT_MID) ? POST_BREW_CAP_MID
+      : POST_BREW_CAP;
+    power = min(power, postCap);
   } else {
     /* Пролив выключен и температура рядом с уставкой — включаем нагрев по чуть-чуть */
     float err = pid.getSetpoint() - currentTemp;

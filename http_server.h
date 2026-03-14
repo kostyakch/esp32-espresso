@@ -15,6 +15,7 @@ extern float getBrewSetpoint();
 extern float getSteamSetpoint();
 extern void setBrewSetpoint(float sp);
 extern bool isManualBrewActive();
+extern String getTempHistoryJson();
 
 static WebServer server(8080);
 
@@ -45,7 +46,8 @@ inline void httpSetup() {
       "\"elapsed_ms\":" + String(brewGetElapsedMs()) + ","
       "\"remaining_ms\":" + String(brewGetRemainingMs()) + ","
       "\"emergency\":" + String(emergencyStop ? 1 : 0) + ","
-      "\"emergency_reason\":\"" + emergencyReason + "\""
+      "\"emergency_reason\":\"" + emergencyReason + "\","
+      "\"temp_history\":" + getTempHistoryJson() + ""
       "}";
     server.send(200, "application/json", json);
   });
