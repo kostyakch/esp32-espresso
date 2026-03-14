@@ -16,6 +16,8 @@ extern float getSteamSetpoint();
 extern void setBrewSetpoint(float sp);
 extern bool isManualBrewActive();
 extern String getTempHistoryJson();
+extern bool getHeaterStandby();
+extern void setHeaterStandby(bool standby);
 
 static WebServer server(8080);
 
@@ -47,6 +49,7 @@ inline void httpSetup() {
       "\"remaining_ms\":" + String(brewGetRemainingMs()) + ","
       "\"emergency\":" + String(emergencyStop ? 1 : 0) + ","
       "\"emergency_reason\":\"" + emergencyReason + "\","
+      "\"heater_standby\":" + String(getHeaterStandby() ? 1 : 0) + ","
       "\"temp_history\":" + getTempHistoryJson() + ""
       "}";
     server.send(200, "application/json", json);
@@ -95,6 +98,17 @@ inline void httpSetup() {
 
   server.on("/mode_steam", HTTP_POST, []() {
     setModeSteam();
+    server.sendHeader("Location", "/");
+    server.send(303);
+  });
+
+  server.on("/heater_off", HTTP_POST, []() {
+    setHeaterStandby(true);
+    server.sendHeader("Location", "/");
+    server.send(303);
+  });
+  server.on("/heater_on", HTTP_POST, []() {
+    setHeaterStandby(false);
     server.sendHeader("Location", "/");
     server.send(303);
   });

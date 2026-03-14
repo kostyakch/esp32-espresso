@@ -97,6 +97,9 @@ static bool brewLongActive = false;
 bool emergencyStop = false;
 String emergencyReason = "";
 bool heaterOn = false;
+/* После загрузки нагрев всегда включён (standby = false) */
+bool heaterStandby = false;
+#define HEATER_STANDBY_SETPOINT 20.0f
 
 void triggerEmergencyStop(String reason) {
   if (!emergencyStop) {
@@ -186,6 +189,22 @@ void updatePump() {
 
 void setModeBrew() { applyMode(MODE_BREW); }
 void setModeSteam() { applyMode(MODE_STEAM); }
+
+bool getHeaterStandby() { return heaterStandby; }
+void setHeaterStandby(bool standby) {
+  heaterStandby = standby;
+  if (heaterStandby) {
+    pid.setSetpoint(HEATER_STANDBY_SETPOINT);
+    pid.reset();
+  } else {
+    if (currentMode == MODE_STEAM)
+      pid.setSetpoint(STEAM_SETPOINT);
+    else
+      pid.setSetpoint(brewSetpoint);
+    pid.reset();
+  }
+  autoTuneApplySetpoint(pid.getSetpoint());
+}
 bool isSteamMode() { return currentMode == MODE_STEAM; }
 const char* getModeName() { return currentMode == MODE_STEAM ? "steam" : "brew"; }
 float getBrewSetpoint() { return brewSetpoint; }
@@ -500,6 +519,13 @@ void loop() {
   if (currentTemp > MAX_SAFE_TEMP) {
     triggerEmergencyStop("Temperature too high: " + String(currentTemp) + "°C");
   }
+
+  if (heaterStandby)
+    pid.setSetpoint(HEATER_STANDBY_SETPOINT);
+  else if (currentMode == MODE_STEAM)
+    pid.setSetpoint(STEAM_SETPOINT);
+  else
+    pid.setSetpoint(brewSetpoint);
 
   float power = autoTune.active
     ? autoTuneUpdate(currentTemp)
