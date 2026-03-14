@@ -26,8 +26,13 @@ inline const char* brewGetStateName() {
 }
 
 inline void brewStart() {
-  brewState = PREINFUSION;
   stateStart = millis();
+  if (preinfusionMs > 0)
+    brewState = PREINFUSION;
+  else if (pauseMs > 0)
+    brewState = PAUSE;
+  else
+    brewState = BREW;
 }
 
 inline void brewStop() {
@@ -54,14 +59,14 @@ inline void brewLoop() {
   switch (brewState) {
     case PREINFUSION:
       if (elapsed >= preinfusionMs) {
-        brewState = PAUSE;
         stateStart = millis();
+        brewState = (pauseMs > 0) ? PAUSE : BREW;
       }
       break;
     case PAUSE:
       if (elapsed >= pauseMs) {
-        brewState = BREW;
         stateStart = millis();
+        brewState = BREW;
       }
       break;
     case BREW:
