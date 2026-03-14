@@ -19,6 +19,7 @@ extern bool isManualBrewActive();
 static WebServer server(8080);
 
 extern bool otaInProgress;
+extern bool heaterOn;
 inline void httpStop() {
   server.stop();
   Serial.println("HTTP: Server stopped");
@@ -33,6 +34,7 @@ inline void httpSetup() {
     String json =
       "{"
       "\"temp\":" + String(currentTemp, 1) + ","
+      "\"heater\":" + String(heaterOn ? 1 : 0) + ","
       "\"setpoint\":" + String(pid.getSetpoint(),1) + ","
       "\"brew_sp\":" + String(getBrewSetpoint(),1) + ","
       "\"steam_sp\":" + String(getSteamSetpoint(),1) + ","

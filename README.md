@@ -1,5 +1,8 @@
 # Контроллер эспрессо
 
+### Сборка (Arduino IDE, ESP32)
+После обновления пакета ESP32 прошивка может не помещаться (139% и «text section exceeds available space»). **Смени схему разбиения:** в меню **Скетч → Загрузка платы** выбери плату, затем **Инструменты → Partition Scheme** → **Minimal SPIFFS (1.9MB APP)** или **No OTA (2MB APP)**. Так приложению даётся ~2 MB вместо ~1.3 MB, и сборка проходит.
+
 ### Подключение (ESP32 DevKit)
 - PT100 + MAX31865 (SPI): CS=GPIO5, MOSI=GPIO23, MISO=GPIO19, CLK=GPIO18, 3V3, GND
 - SSR нагрева (RexC-100 SSR-40DA): IN+=GPIO26, IN-=GND, AC нагрузка последовательно с нагревателем

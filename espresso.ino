@@ -83,6 +83,7 @@ static bool brewLongActive = false;
 
 bool emergencyStop = false;
 String emergencyReason = "";
+bool heaterOn = false;
 
 void triggerEmergencyStop(String reason) {
   if (!emergencyStop) {
@@ -332,6 +333,7 @@ void setup() {
 
 void loop() {
   if (emergencyStop) {
+    heaterOn = false;
     digitalWrite(SSR_HEATER_PIN, LOW);
     digitalWrite(SSR_PUMP_PIN, LOW);
     static unsigned long lastErrorMs = 0;
@@ -483,13 +485,12 @@ void loop() {
     windowStart += pidWindow;
 
   if (temperatureSimulated()) {
+    heaterOn = false;
     digitalWrite(SSR_HEATER_PIN, LOW);
     temperatureSimUpdate(power);
   } else {
-    digitalWrite(
-      SSR_HEATER_PIN,
-      (power / 100.0) * pidWindow > (now - windowStart)
-    );
+    heaterOn = ((power / 100.0f) * pidWindow > (now - windowStart));
+    digitalWrite(SSR_HEATER_PIN, heaterOn ? HIGH : LOW);
   }
 
   updatePump();
