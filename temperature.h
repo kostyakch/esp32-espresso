@@ -9,7 +9,8 @@
 
 #define RNOMINAL 100.0
 #define RREF     430.0
-#define MAX_SAFE_TEMP 130.0   // °C — выше уставки пара (115°), чтобы перелёт не включал аварию
+#define MAX_SAFE_TEMP 130.0       // °C — авария в режиме заваривания
+#define MAX_SAFE_TEMP_STEAM 135.0 // °C — в режиме пара 130° рабочая, аварию не включаем до 145°
 /* 2-wire: MAX31865_2WIRE, 3-wire: MAX31865_3WIRE, 4-wire: MAX31865_4WIRE. Diag showed 2/4-wire OK, 3-wire wrong for this board. */
 #define MAX31865_WIRES MAX31865_2WIRE
 

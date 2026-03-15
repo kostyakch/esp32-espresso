@@ -24,9 +24,9 @@
 // Brew button: GPIO33 -> GND (internal pull-up enabled)
 // Steam mode button: GPIO32 -> GND (internal pull-up enabled)
 
-#define STEAM_SETPOINT 115.0
+#define STEAM_SETPOINT 125.0
 /* Fallback уставки заваривания, если в настройках ещё нет значения */
-#define FALLBACK_BREW_SETPOINT 93.0f
+#define FALLBACK_BREW_SETPOINT 90.0f
 /* Во время пролива — полная мощность и подъём уставки на 5° для меньшей просадки */
 #define BREW_SETPOINT_BOOST  5.0f
 /* Ограничение мощности при приближении к уставке (нагрев). Пороги в % пути: 100% = уставка. */
@@ -393,17 +393,15 @@ void setup() {
 }
 
 void loop() {
+  /* В режиме аварии только нагрев выключен, кнопка пролива и насос работают */
   if (emergencyStop) {
     heaterOn = false;
     digitalWrite(SSR_HEATER_PIN, LOW);
-    digitalWrite(SSR_PUMP_PIN, LOW);
     static unsigned long lastErrorMs = 0;
     if (millis() - lastErrorMs > 2000) {
-      Serial.println("!!! SYSTEM HALTED: " + emergencyReason + " !!!");
+      Serial.println("!!! EMERGENCY (heater off, pump works): " + emergencyReason + " !!!");
       lastErrorMs = millis();
     }
-    yield();
-    return;
   }
 
   ArduinoOTA.handle();
@@ -529,7 +527,8 @@ void loop() {
     currentTemp = temp;
   }
 
-  if (currentTemp > MAX_SAFE_TEMP) {
+  float safeLimit = (currentMode == MODE_STEAM) ? MAX_SAFE_TEMP_STEAM : MAX_SAFE_TEMP;
+  if (currentTemp > safeLimit) {
     triggerEmergencyStop("Temperature too high: " + String(currentTemp) + "°C");
   }
 
@@ -621,6 +620,8 @@ void loop() {
     temperatureSimUpdate(power);
   } else {
     heaterOn = ((power / 100.0f) * currentWindow > (now - windowStart));
+    if (emergencyStop || heaterStandby)
+      heaterOn = false;
     digitalWrite(SSR_HEATER_PIN, heaterOn ? HIGH : LOW);
   }
 
