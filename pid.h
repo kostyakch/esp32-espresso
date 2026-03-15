@@ -18,6 +18,7 @@ public:
     integral = 0;
     lastError = 0;
     lastTime = millis();
+    haveLastInput = false;
   }
 
   float compute(float input) {
@@ -30,7 +31,10 @@ public:
 
     float error = setpoint - input;
 
-    float derivative = (error - lastError) / dt;
+    // Derivative on measurement: -Kd * d(input)/dt — brakes when temp rises quickly (reduces overshoot)
+    float derivative = 0;
+    if (haveLastInput)
+      derivative = -(input - lastInput) / dt;
 
     // When at or above setpoint, zero integral so we don't overshoot or hold temp above setpoint
     if (error <= 0) integral = 0;
@@ -46,6 +50,8 @@ public:
     output = constrain(output, outMin, outMax);
 
     lastError = error;
+    lastInput = input;
+    haveLastInput = true;
     lastTime = now;
     lastOutput = output;
 
@@ -69,6 +75,8 @@ private:
 
   float integral = 0;
   float lastError = 0;
+  float lastInput = 0;
+  bool haveLastInput = false;
   float lastOutput = 0;
   unsigned long lastTime = 0;
 

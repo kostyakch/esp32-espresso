@@ -13,7 +13,9 @@
 #define BREW_BUTTON_PIN 33
 #define BREW_BUTTON_DEBOUNCE_MS 80   /* 80 ms — отсекает помехи от помпы/SSR */
 #define BREW_BUTTON_LONG_MS 500
-#define BREW_BUTTON_MIN_PRESS_MS 50  /* короткое нажатие учитываем только если кнопка была внизу не меньше 50 ms */
+#define BREW_BUTTON_MIN_PRESS_MS 100 /* уверенное нажатие: кнопка стабильно LOW не меньше 100 ms перед учётом отпускания */
+/* После загрузки игнорируем кнопку пролива, чтобы помехи от SSR/нагревателя при выходе на температуру не вызывали самопроизвольный старт */
+#define BREW_BUTTON_ARM_AFTER_MS 8000UL
 
 // Wiring spec (ESP32 DevKit)
 // PT100 + MAX31865 (SPI): CS=GPIO5, MOSI=GPIO23, MISO=GPIO19, CLK=GPIO18, 3V3, GND
@@ -31,16 +33,21 @@
 #define POST_BREW_CAP_MID     35.0f   /* при средней */
 #define POST_BREW_SETPOINT_LOW  65.0f
 #define POST_BREW_SETPOINT_MID  80.0f
+/* За 5° до уставки начинаем ограничивать мощность — торможение до цели, меньше перелёт */
+#define PRE_SETPOINT_DEG   5.0f
+#define PRE_SETPOINT_CAP   44.0f
 /* Когда пролив выключен и температура близка к уставке — греем очень аккуратно (по чуть-чуть) */
 #define NEAR_SETPOINT_DEG  2.0f
 #define NEAR_SETPOINT_CAP  28.0f
+/* Во время пролива поднимаем уставку на 4–5 °C, чтобы PID не «успокаивался» на 93 и держал полную мощность — меньше просадка */
+#define BREW_SETPOINT_BOOST  5.0f
 #define TEMP_EMA_ALPHA  0.3f
 #define TEMP_HISTORY_SIZE  60
 #define TEMP_HISTORY_INTERVAL_MS  1000UL
 
 float currentTemp = 25.0;
 
-PIDController pid(12.0, 0.25, 0.0);  // Ki 0.25 — меньше перелёт, чем при 0.4
+PIDController pid(9.0, 0.25, 32.0);   // Kd 32 — сильнее тормоз при росте T; PRE_SETPOINT_CAP 44% — мягче подход, перелёт 93→97 уменьшен
 
 const unsigned long pidWindow = 500;
 unsigned long windowStart = 0;
@@ -94,6 +101,7 @@ static unsigned long lastBrewButtonMs = 0;
 static unsigned long brewButtonPressMs = 0;
 static bool manualBrewActive = false;
 static bool brewLongActive = false;
+static bool brewButtonArmed = false;  /* true после BREW_BUTTON_ARM_AFTER_MS с момента загрузки */
 
 bool emergencyStop = false;
 String emergencyReason = "";
@@ -423,6 +431,10 @@ void loop() {
     }
   }
 
+  if (!brewButtonArmed && (now > BREW_BUTTON_ARM_AFTER_MS)) {
+    brewButtonArmed = true;
+  }
+
   bool brewButtonReading = digitalRead(BREW_BUTTON_PIN);
   if (brewButtonReading != lastBrewButtonReading) {
     lastBrewButtonMs = now;
@@ -440,8 +452,11 @@ void loop() {
           unsigned long pressDuration = now - brewButtonPressMs;
           if (pressDuration >= BREW_BUTTON_MIN_PRESS_MS) {
             if (brewGetState() == IDLE) {
-              brewStart();
-              Serial.println("Brew button: short -> start");
+              if (brewButtonArmed) {
+                brewStart();
+                Serial.println("Brew button: short -> start");
+              }
+              /* иначе ещё не прошло BREW_BUTTON_ARM_AFTER_MS — игнорируем первый «отпуск» после загрузки */
             } else {
               brewStop();
               Serial.println("Brew button: short -> stop");
@@ -454,7 +469,7 @@ void loop() {
       }
     }
   }
-  if (lastBrewButtonState == LOW && !brewLongActive &&
+  if (brewButtonArmed && lastBrewButtonState == LOW && !brewLongActive &&
       (now - brewButtonPressMs) > BREW_BUTTON_LONG_MS) {
     brewLongActive = true;
     manualBrewActive = true;
@@ -524,21 +539,23 @@ void loop() {
     triggerEmergencyStop("Temperature too high: " + String(currentTemp) + "°C");
   }
 
+  bool inBrew = (brewGetState() != IDLE || manualBrewActive);
+  if (wasInBrew && !inBrew)
+    lastBrewEndMs = now;
+  wasInBrew = inBrew;
+
   if (heaterStandby)
     pid.setSetpoint(HEATER_STANDBY_SETPOINT);
   else if (currentMode == MODE_STEAM)
     pid.setSetpoint(STEAM_SETPOINT);
+  else if (inBrew)
+    pid.setSetpoint(brewSetpoint + BREW_SETPOINT_BOOST);
   else
     pid.setSetpoint(brewSetpoint);
 
   float power = autoTune.active
     ? autoTuneUpdate(currentTemp)
     : pid.compute(currentTemp);
-
-  bool inBrew = (brewGetState() != IDLE || manualBrewActive);
-  if (wasInBrew && !inBrew)
-    lastBrewEndMs = now;
-  wasInBrew = inBrew;
 
   if (inBrew) {
     /* Во время пролива — нагрев до 100% по запросу PID */
@@ -549,8 +566,10 @@ void loop() {
       : POST_BREW_CAP;
     power = min(power, postCap);
   } else {
-    /* Пролив выключен и температура рядом с уставкой — включаем нагрев по чуть-чуть */
+    /* Пролив выключен: за 5° до уставки — ограничиваем мощность (торможение), в 2° — ещё мягче */
     float err = pid.getSetpoint() - currentTemp;
+    if (err > 0 && err <= PRE_SETPOINT_DEG)
+      power = min(power, (float)PRE_SETPOINT_CAP);
     if (err > 0 && err <= NEAR_SETPOINT_DEG)
       power = min(power, (float)NEAR_SETPOINT_CAP);
   }
