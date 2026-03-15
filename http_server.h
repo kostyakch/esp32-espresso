@@ -52,6 +52,7 @@ inline void httpSetup() {
       "\"heater_standby\":" + String(getHeaterStandby() ? 1 : 0) + ","
       "\"temp_history\":" + getTempHistoryJson() + ""
       "}";
+    server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate");
     server.send(200, "application/json", json);
   });
 

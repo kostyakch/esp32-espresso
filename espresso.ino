@@ -47,7 +47,7 @@
 #define MAINTENANCE_BAND_ABOVE 0.3f /* полоса выше уставки для подогрева, °C */
 #define TEMP_TREND_COOLING_THRESHOLD 0.0f  /* подогрев выше уставки только когда T не растёт (tempRate ≤ 0), иначе не усиливаем перелёт */
 #define TEMP_EMA_ALPHA  0.3f
-#define TEMP_HISTORY_SIZE  60
+#define TEMP_HISTORY_SIZE  600   /* 600 × 1 с = последние 10 минут для графика в вебе */
 #define TEMP_HISTORY_INTERVAL_MS  1000UL
 
 float currentTemp = 25.0;
@@ -376,7 +376,8 @@ void saveSettings() {
 
 String getTempHistoryJson() {
   String s = "[";
-  for (int i = 0; i < tempHistoryCount; i++) {
+  /* Отдаём каждую вторую точку (макс 300), чтобы ответ не тормозил и график обновлялся при нагреве */
+  for (int i = 0; i < tempHistoryCount; i += 2) {
     if (i) s += ",";
     s += String(tempHistory[(tempHistoryIndex + i) % TEMP_HISTORY_SIZE], 1);
   }
