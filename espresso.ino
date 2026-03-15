@@ -45,7 +45,7 @@
 #define PID_WINDOW_NEAR_MS  10000UL /* окно 10 с в зонах 90%/97% — реже включения, меньше перелёт */
 #define MAINTENANCE_HEAT_ABOVE 6.0f /* мощность 6% при 0…+0.3° выше уставки (против инерции остывания) */
 #define MAINTENANCE_BAND_ABOVE 0.3f /* полоса выше уставки для подогрева, °C */
-#define TEMP_TREND_COOLING_THRESHOLD 0.01f /* °C/s: подогрев выше уставки только при почти нулевом/отрицательном росте */
+#define TEMP_TREND_COOLING_THRESHOLD 0.0f  /* подогрев выше уставки только когда T не растёт (tempRate ≤ 0), иначе не усиливаем перелёт */
 #define TEMP_EMA_ALPHA  0.3f
 #define TEMP_HISTORY_SIZE  60
 #define TEMP_HISTORY_INTERVAL_MS  1000UL
