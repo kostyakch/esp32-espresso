@@ -4,6 +4,7 @@
 #include "http_server.h"
 #include "wifi_prov.h"
 #include <Preferences.h>
+#include <math.h>
 
 /* ===== PINS ===== */
 #define SSR_HEATER_PIN 26
@@ -29,13 +30,17 @@
 #define FALLBACK_BREW_SETPOINT 93.0f
 /* Во время пролива — полная мощность и подъём уставки на 5° для меньшей просадки */
 #define BREW_SETPOINT_BOOST  5.0f
-/* Ограничение мощности при приближении к уставке (нагрев) */
-#define APPROACH_CAP_10DEG  50.0f   /* остаток до уставки <= 10° → макс 50% */
-#define APPROACH_CAP_5DEG   25.0f   /* остаток <= 5° → 25%, ждём 5 сек */
-#define APPROACH_CAP_3DEG   15.0f   /* остаток <= 3° → 15%, пауза 5 сек */
-#define APPROACH_PAUSE_10_MS 5000UL /* пауза нагревa 5 сек при первом достижении 10° до цели (против перелёта) */
-#define APPROACH_WAIT_MS    5000UL  /* задержка в зоне 5° перед переходом в зону 3° */
-#define APPROACH_PAUSE_MS   5000UL  /* пауза в зоне 3° перед стабилизацией */
+/* Ограничение мощности при приближении к уставке (нагрев). Пороги в % пути: 100% = уставка. */
+#define APPROACH_T_BASE    20.0f   /* база для процента (0% ≈ комнатная), 100% = setpoint */
+#define APPROACH_PCT_80    0.80f   /* при 80% пути к уставке → макс 50%, пауза 5 сек */
+#define APPROACH_PCT_90    0.90f   /* при 90% → 25%, ждём 5 сек */
+#define APPROACH_PCT_97    0.97f   /* при 97% → 15%, пауза 5 сек */
+#define APPROACH_CAP_Z1    50.0f
+#define APPROACH_CAP_Z2    25.0f
+#define APPROACH_CAP_Z3    15.0f
+#define APPROACH_PAUSE_10_MS 5000UL /* пауза нагревa 5 сек при первом входе в зону 80% */
+#define APPROACH_WAIT_MS    5000UL  /* задержка в зоне 90% перед переходом в зону 97% */
+#define APPROACH_PAUSE_MS   5000UL  /* пауза в зоне 97% перед стабилизацией */
 #define TEMP_EMA_ALPHA  0.3f
 #define TEMP_HISTORY_SIZE  60
 #define TEMP_HISTORY_INTERVAL_MS  1000UL
@@ -54,11 +59,11 @@ static int tempHistoryIndex = 0;
 static int tempHistoryCount = 0;
 static unsigned long lastHistoryMs = 0;
 
-/* Состояние приближения к уставке: ограничение мощности по зонам */
-static int approachZone = 0;              /* 0=далеко, 1=<=10°, 2=<=5°, 3=<=3° */
-static unsigned long approachPause10Until = 0; /* конец паузы 5 сек при входе в зону 10° */
+/* Состояние приближения к уставке: ограничение мощности по % пути (100% = setpoint) */
+static int approachZone = 0;              /* 0=далеко, 1=≥80%, 2=≥90%, 3=≥97% */
+static unsigned long approachPause10Until = 0; /* конец паузы 5 сек при входе в зону 80% */
 static unsigned long approachWaitUntil = 0;  /* момент, после которого разрешён переход 2→3 */
-static unsigned long approachPauseUntil = 0;  /* момент окончания паузы 2 сек в зоне 3 */
+static unsigned long approachPauseUntil = 0;  /* момент окончания паузы в зоне 97% */
 
 struct AutoTuneState {
   bool active = false;
@@ -563,40 +568,42 @@ void loop() {
     ? autoTuneUpdate(currentTemp)
     : pid.compute(currentTemp);
 
-  /* Ограничение мощности при приближении к уставке (только при нагреве, не в проливе) */
+  /* Ограничение мощности по % пути к уставке (100% = setpoint). Только при нагреве, не в проливе. */
   if (!inBrew && !heaterStandby && !autoTune.active) {
-    float err = pid.getSetpoint() - currentTemp;
-    if (err > 10.0f) {
+    float setpoint = pid.getSetpoint();
+    float range = setpoint - APPROACH_T_BASE;
+    float progress = (range > 0.1f) ? constrain((currentTemp - APPROACH_T_BASE) / range, 0.0f, 1.0f) : 0.0f;
+    progress = roundf(progress * 10.0f) / 10.0f;
+
+    if (progress < APPROACH_PCT_80) {
       approachZone = 0;
       approachPause10Until = 0;
       approachWaitUntil = 0;
       approachPauseUntil = 0;
-    } else if (err > 5.0f) {
+    } else if (progress < APPROACH_PCT_90) {
       if (approachZone < 1) {
         approachZone = 1;
         approachPause10Until = now + APPROACH_PAUSE_10_MS;
       }
-      /* Пауза 5 сек при первом достижении 10° до цели — нагрев выключен, уменьшает перелёт */
       if (now < approachPause10Until)
         power = 0.0f;
       else
-        power = min(power, APPROACH_CAP_10DEG);
-    } else if (err > 3.0f) {
+        power = min(power, APPROACH_CAP_Z1);
+    } else if (progress < APPROACH_PCT_97) {
       if (approachZone < 2) {
         approachZone = 2;
         approachWaitUntil = now + APPROACH_WAIT_MS;
       }
-      power = min(power, APPROACH_CAP_5DEG);
+      power = min(power, APPROACH_CAP_Z2);
     } else {
-      /* err <= 3°: переход в зону 15% только после выдержки 5 сек в зоне 25% */
       if (approachZone == 2 && now < approachWaitUntil) {
-        power = min(power, APPROACH_CAP_5DEG);
+        power = min(power, APPROACH_CAP_Z2);
       } else {
         if (approachZone < 3) {
           approachZone = 3;
           approachPauseUntil = now + APPROACH_PAUSE_MS;
         }
-        power = min(power, APPROACH_CAP_3DEG);
+        power = min(power, APPROACH_CAP_Z3);
       }
     }
   }
