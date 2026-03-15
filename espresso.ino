@@ -36,11 +36,11 @@
 #define APPROACH_PCT_97    0.97f   /* при 97% → 15%, пауза 5 сек */
 #define APPROACH_CAP_Z1    50.0f
 #define APPROACH_CAP_Z2    20.0f   /* 25→20% меньше перелёт после пролива */
-#define APPROACH_CAP_Z3    10.0f   /* 15→10% мягче выход на уставку */
+#define APPROACH_CAP_Z3    11.0f   /* чуть выше 10% — меньше просадка на 1° ниже цели */
 #define APPROACH_PAUSE_10_MS 5000UL /* пауза нагревa 5 сек при первом входе в зону 80% */
-#define APPROACH_PAUSE_90_MS 30000UL /* пауза 20 сек при 90% (осталось 10% до цели), против перелёта после пролива */
+#define APPROACH_PAUSE_90_MS 30000UL /* пауза при 90% (осталось 10% до цели), против перелёта после пролива */
 #define APPROACH_WAIT_MS    6000UL  /* задержка в зоне 90% перед переходом в зону 97% */
-#define APPROACH_PAUSE_MS   18000UL /* пауза 15 сек в зоне 97% перед стабилизацией */
+#define APPROACH_PAUSE_MS   15000UL /* пауза в зоне 97% короче (18→12 с) — меньше остывание ниже цели */
 #define TEMP_EMA_ALPHA  0.3f
 #define TEMP_HISTORY_SIZE  60
 #define TEMP_HISTORY_INTERVAL_MS  1000UL
