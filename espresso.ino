@@ -13,8 +13,7 @@
 #define MODE_BUTTON_DEBOUNCE_MS 50
 #define BREW_BUTTON_PIN 33
 #define BREW_BUTTON_DEBOUNCE_MS 80   /* 80 ms — отсекает помехи от помпы/SSR */
-#define BREW_BUTTON_LONG_MS 500
-#define BREW_BUTTON_MIN_PRESS_MS 100 /* уверенное нажатие: кнопка стабильно LOW не меньше 100 ms перед учётом отпускания */
+#define BREW_BUTTON_LONG_MS 500   /* удержание не меньше 500 ms запускает экстракцию */
 /* После загрузки игнорируем кнопку пролива, чтобы помехи от SSR/нагревателя при выходе на температуру не вызывали самопроизвольный старт */
 #define BREW_BUTTON_ARM_AFTER_MS 8000UL
 
@@ -465,33 +464,24 @@ void loop() {
         brewLongActive = false;
         Serial.println("Brew button: down");
       } else {
-        if (!brewLongActive) {
-          unsigned long pressDuration = now - brewButtonPressMs;
-          if (pressDuration >= BREW_BUTTON_MIN_PRESS_MS) {
-            if (brewGetState() == IDLE) {
-              if (brewButtonArmed) {
-                brewStart();
-                Serial.println("Brew button: short -> start");
-              }
-              /* иначе ещё не прошло BREW_BUTTON_ARM_AFTER_MS — игнорируем первый «отпуск» после загрузки */
-            } else {
-              brewStop();
-              Serial.println("Brew button: short -> stop");
-            }
-          }
-        } else {
-          manualBrewActive = false;
-          Serial.println("Brew button: long -> release");
+        /* Отпускание: останавливаем экстракцию, только если она ещё идёт (не завершилась по профилю) */
+        if (brewLongActive && brewGetState() != IDLE) {
+          brewStop();
+          Serial.println("Brew button: release -> stop extraction");
         }
+        brewLongActive = false;
+        manualBrewActive = false;
       }
     }
   }
+  /* Только удержание запускает экстракцию; короткое нажатие не делает ничего */
   if (brewButtonArmed && lastBrewButtonState == LOW && !brewLongActive &&
       (now - brewButtonPressMs) > BREW_BUTTON_LONG_MS) {
     brewLongActive = true;
-    manualBrewActive = true;
-    brewStop();
-    Serial.println("Brew button: long -> hold");
+    if (brewGetState() == IDLE) {
+      brewStart();
+      Serial.println("Brew button: long -> start extraction");
+    }
   }
 
   float temp;
