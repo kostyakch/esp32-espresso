@@ -24,10 +24,18 @@
 // Brew button: GPIO33 -> GND (internal pull-up enabled)
 // Steam mode button: GPIO32 -> GND (internal pull-up enabled)
 
-#define DEFAULT_BREW_SETPOINT 93.0
 #define STEAM_SETPOINT 115.0
+/* Fallback уставки заваривания, если в настройках ещё нет значения */
+#define FALLBACK_BREW_SETPOINT 93.0f
 /* Во время пролива — полная мощность и подъём уставки на 5° для меньшей просадки */
 #define BREW_SETPOINT_BOOST  5.0f
+/* Ограничение мощности при приближении к уставке (нагрев) */
+#define APPROACH_CAP_10DEG  50.0f   /* остаток до уставки <= 10° → макс 50% */
+#define APPROACH_CAP_5DEG   25.0f   /* остаток <= 5° → 25%, ждём 5 сек */
+#define APPROACH_CAP_3DEG   15.0f   /* остаток <= 3° → 15%, пауза 5 сек */
+#define APPROACH_PAUSE_10_MS 5000UL /* пауза нагревa 5 сек при первом достижении 10° до цели (против перелёта) */
+#define APPROACH_WAIT_MS    5000UL  /* задержка в зоне 5° перед переходом в зону 3° */
+#define APPROACH_PAUSE_MS   5000UL  /* пауза в зоне 3° перед стабилизацией */
 #define TEMP_EMA_ALPHA  0.3f
 #define TEMP_HISTORY_SIZE  60
 #define TEMP_HISTORY_INTERVAL_MS  1000UL
@@ -46,11 +54,17 @@ static int tempHistoryIndex = 0;
 static int tempHistoryCount = 0;
 static unsigned long lastHistoryMs = 0;
 
+/* Состояние приближения к уставке: ограничение мощности по зонам */
+static int approachZone = 0;              /* 0=далеко, 1=<=10°, 2=<=5°, 3=<=3° */
+static unsigned long approachPause10Until = 0; /* конец паузы 5 сек при входе в зону 10° */
+static unsigned long approachWaitUntil = 0;  /* момент, после которого разрешён переход 2→3 */
+static unsigned long approachPauseUntil = 0;  /* момент окончания паузы 2 сек в зоне 3 */
+
 struct AutoTuneState {
   bool active = false;
   bool heating = true;
   bool initialized = false;
-  float setpoint = DEFAULT_BREW_SETPOINT;
+  float setpoint = 0;
   float outputHigh = 60.0f;
   float outputLow = 0.0f;
   float lastTemp = 0.0f;
@@ -76,7 +90,7 @@ enum Mode {
 };
 
 static Mode currentMode = MODE_BREW;
-static float brewSetpoint = DEFAULT_BREW_SETPOINT;
+static float brewSetpoint = FALLBACK_BREW_SETPOINT;
 static bool lastButtonState = HIGH;
 static bool lastButtonReading = HIGH;
 static unsigned long lastButtonMs = 0;
@@ -164,6 +178,13 @@ void runMax31865Diag() {
   Serial.println("MAX31865 diag: done");
 }
 
+static void resetApproachState() {
+  approachZone = 0;
+  approachPause10Until = 0;
+  approachWaitUntil = 0;
+  approachPauseUntil = 0;
+}
+
 void applyMode(Mode mode) {
   currentMode = mode;
   if (currentMode == MODE_STEAM) {
@@ -172,6 +193,7 @@ void applyMode(Mode mode) {
     pid.setSetpoint(brewSetpoint);
   }
   pid.reset();  // clear integral when mode/setpoint changes
+  resetApproachState();
   autoTuneApplySetpoint(pid.getSetpoint());
 }
 
@@ -197,6 +219,7 @@ void setHeaterStandby(bool standby) {
       pid.setSetpoint(brewSetpoint);
     pid.reset();
   }
+  resetApproachState();
   autoTuneApplySetpoint(pid.getSetpoint());
 }
 bool isSteamMode() { return currentMode == MODE_STEAM; }
@@ -209,6 +232,7 @@ void setBrewSetpoint(float sp) {
   if (currentMode == MODE_BREW) {
     pid.setSetpoint(brewSetpoint);
     pid.reset();  // avoid overshoot: clear integral when setpoint changes
+    resetApproachState();
   }
   autoTuneApplySetpoint(pid.getSetpoint());
 }
@@ -311,7 +335,7 @@ float autoTuneUpdate(float temp) {
 
 void loadSettings() {
   prefs.begin("espresso", true);
-  float sp = prefs.getFloat("brew_sp", DEFAULT_BREW_SETPOINT);
+  float sp = prefs.getFloat("brew_sp", FALLBACK_BREW_SETPOINT);
   unsigned long pre = prefs.getULong("pre_ms", DEFAULT_PREINFUSION_MS);
   unsigned long pause = prefs.getULong("pause_ms", DEFAULT_PAUSE_MS);
   unsigned long brew = prefs.getULong("brew_ms", DEFAULT_BREW_MS);
@@ -538,6 +562,44 @@ void loop() {
   float power = autoTune.active
     ? autoTuneUpdate(currentTemp)
     : pid.compute(currentTemp);
+
+  /* Ограничение мощности при приближении к уставке (только при нагреве, не в проливе) */
+  if (!inBrew && !heaterStandby && !autoTune.active) {
+    float err = pid.getSetpoint() - currentTemp;
+    if (err > 10.0f) {
+      approachZone = 0;
+      approachPause10Until = 0;
+      approachWaitUntil = 0;
+      approachPauseUntil = 0;
+    } else if (err > 5.0f) {
+      if (approachZone < 1) {
+        approachZone = 1;
+        approachPause10Until = now + APPROACH_PAUSE_10_MS;
+      }
+      /* Пауза 5 сек при первом достижении 10° до цели — нагрев выключен, уменьшает перелёт */
+      if (now < approachPause10Until)
+        power = 0.0f;
+      else
+        power = min(power, APPROACH_CAP_10DEG);
+    } else if (err > 3.0f) {
+      if (approachZone < 2) {
+        approachZone = 2;
+        approachWaitUntil = now + APPROACH_WAIT_MS;
+      }
+      power = min(power, APPROACH_CAP_5DEG);
+    } else {
+      /* err <= 3°: переход в зону 15% только после выдержки 5 сек в зоне 25% */
+      if (approachZone == 2 && now < approachWaitUntil) {
+        power = min(power, APPROACH_CAP_5DEG);
+      } else {
+        if (approachZone < 3) {
+          approachZone = 3;
+          approachPauseUntil = now + APPROACH_PAUSE_MS;
+        }
+        power = min(power, APPROACH_CAP_3DEG);
+      }
+    }
+  }
 
   if (inBrew)
     power = 100.0f;
