@@ -36,11 +36,12 @@
 #define APPROACH_PCT_90    0.90f   /* при 90% → 25%, ждём 5 сек */
 #define APPROACH_PCT_97    0.97f   /* при 97% → 15%, пауза 5 сек */
 #define APPROACH_CAP_Z1    50.0f
-#define APPROACH_CAP_Z2    25.0f
-#define APPROACH_CAP_Z3    15.0f
+#define APPROACH_CAP_Z2    20.0f   /* 25→20% меньше перелёт после пролива */
+#define APPROACH_CAP_Z3    10.0f   /* 15→10% мягче выход на уставку */
 #define APPROACH_PAUSE_10_MS 5000UL /* пауза нагревa 5 сек при первом входе в зону 80% */
-#define APPROACH_WAIT_MS    5000UL  /* задержка в зоне 90% перед переходом в зону 97% */
-#define APPROACH_PAUSE_MS   5000UL  /* пауза в зоне 97% перед стабилизацией */
+#define APPROACH_PAUSE_90_MS 30000UL /* пауза 20 сек при 90% (осталось 10% до цели), против перелёта после пролива */
+#define APPROACH_WAIT_MS    6000UL  /* задержка в зоне 90% перед переходом в зону 97% */
+#define APPROACH_PAUSE_MS   18000UL /* пауза 15 сек в зоне 97% перед стабилизацией */
 #define TEMP_EMA_ALPHA  0.3f
 #define TEMP_HISTORY_SIZE  60
 #define TEMP_HISTORY_INTERVAL_MS  1000UL
@@ -62,6 +63,7 @@ static unsigned long lastHistoryMs = 0;
 /* Состояние приближения к уставке: ограничение мощности по % пути (100% = setpoint) */
 static int approachZone = 0;              /* 0=далеко, 1=≥80%, 2=≥90%, 3=≥97% */
 static unsigned long approachPause10Until = 0; /* конец паузы 5 сек при входе в зону 80% */
+static unsigned long approachPause90Until = 0; /* конец паузы 14 сек при входе в зону 90% */
 static unsigned long approachWaitUntil = 0;  /* момент, после которого разрешён переход 2→3 */
 static unsigned long approachPauseUntil = 0;  /* момент окончания паузы в зоне 97% */
 
@@ -186,6 +188,7 @@ void runMax31865Diag() {
 static void resetApproachState() {
   approachZone = 0;
   approachPause10Until = 0;
+  approachPause90Until = 0;
   approachWaitUntil = 0;
   approachPauseUntil = 0;
 }
@@ -578,6 +581,7 @@ void loop() {
     if (progress < APPROACH_PCT_80) {
       approachZone = 0;
       approachPause10Until = 0;
+      approachPause90Until = 0;
       approachWaitUntil = 0;
       approachPauseUntil = 0;
     } else if (progress < APPROACH_PCT_90) {
@@ -592,9 +596,14 @@ void loop() {
     } else if (progress < APPROACH_PCT_97) {
       if (approachZone < 2) {
         approachZone = 2;
+        approachPause90Until = now + APPROACH_PAUSE_90_MS;
         approachWaitUntil = now + APPROACH_WAIT_MS;
       }
-      power = min(power, APPROACH_CAP_Z2);
+      /* Пауза 8 сек при первом достижении 90% (осталось 10% до цели) — против перегрева после пролива */
+      if (now < approachPause90Until)
+        power = 0.0f;
+      else
+        power = min(power, APPROACH_CAP_Z2);
     } else {
       if (approachZone == 2 && now < approachWaitUntil) {
         power = min(power, APPROACH_CAP_Z2);
