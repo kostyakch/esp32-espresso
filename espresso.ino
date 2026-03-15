@@ -47,8 +47,6 @@
 #define MAINTENANCE_BAND_ABOVE 0.3f /* полоса выше уставки для подогрева, °C */
 #define TEMP_TREND_COOLING_THRESHOLD 0.0f  /* подогрев выше уставки только когда T не растёт (tempRate ≤ 0), иначе не усиливаем перелёт */
 #define TEMP_EMA_ALPHA  0.3f
-#define TEMP_HISTORY_SIZE  600   /* 600 × 1 с = последние 10 минут для графика в вебе */
-#define TEMP_HISTORY_INTERVAL_MS  1000UL
 
 float currentTemp = 25.0;
 
@@ -59,10 +57,6 @@ unsigned long windowStart = 0;         /* начало текущего окна
 unsigned long lastTelemetryMs = 0;
 static float tempFiltered = 0.0f;
 static bool tempFilterInitialized = false;
-static float tempHistory[TEMP_HISTORY_SIZE];
-static int tempHistoryIndex = 0;
-static int tempHistoryCount = 0;
-static unsigned long lastHistoryMs = 0;
 
 /* Состояние приближения к уставке: ограничение мощности по % пути (100% = setpoint) */
 static int approachZone = 0;              /* 0=далеко, 1=≥80%, 2=≥90%, 3=≥97% */
@@ -374,17 +368,6 @@ void saveSettings() {
   prefs.end();
 }
 
-String getTempHistoryJson() {
-  String s = "[";
-  /* Отдаём каждую вторую точку (макс 300), чтобы ответ не тормозил и график обновлялся при нагреве */
-  for (int i = 0; i < tempHistoryCount; i += 2) {
-    if (i) s += ",";
-    s += String(tempHistory[(tempHistoryIndex + i) % TEMP_HISTORY_SIZE], 1);
-  }
-  s += "]";
-  return s;
-}
-
 void setup() {
   Serial.begin(115200);
   Serial.setTimeout(10);
@@ -544,13 +527,6 @@ void loop() {
     currentTemp = tempFiltered;
   } else {
     currentTemp = temp;
-  }
-
-  if (now - lastHistoryMs >= TEMP_HISTORY_INTERVAL_MS) {
-    lastHistoryMs = now;
-    tempHistory[tempHistoryIndex] = currentTemp;
-    tempHistoryIndex = (tempHistoryIndex + 1) % TEMP_HISTORY_SIZE;
-    if (tempHistoryCount < TEMP_HISTORY_SIZE) tempHistoryCount++;
   }
 
   if (currentTemp > MAX_SAFE_TEMP) {
