@@ -4,6 +4,7 @@
 #include "http_server.h"
 #include "wifi_prov.h"
 #include <Preferences.h>
+#include <math.h>
 
 /* ===== PINS ===== */
 #define SSR_HEATER_PIN 26
@@ -12,8 +13,9 @@
 #define MODE_BUTTON_DEBOUNCE_MS 50
 #define BREW_BUTTON_PIN 33
 #define BREW_BUTTON_DEBOUNCE_MS 80   /* 80 ms — отсекает помехи от помпы/SSR */
-#define BREW_BUTTON_LONG_MS 500
-#define BREW_BUTTON_MIN_PRESS_MS 50  /* короткое нажатие учитываем только если кнопка была внизу не меньше 50 ms */
+#define BREW_BUTTON_LONG_MS 500   /* удержание не меньше 500 ms запускает экстракцию */
+/* После загрузки игнорируем кнопку пролива, чтобы помехи от SSR/нагревателя при выходе на температуру не вызывали самопроизвольный старт */
+#define BREW_BUTTON_ARM_AFTER_MS 8000UL
 
 // Wiring spec (ESP32 DevKit)
 // PT100 + MAX31865 (SPI): CS=GPIO5, MOSI=GPIO23, MISO=GPIO19, CLK=GPIO18, 3V3, GND
@@ -22,43 +24,57 @@
 // Brew button: GPIO33 -> GND (internal pull-up enabled)
 // Steam mode button: GPIO32 -> GND (internal pull-up enabled)
 
-#define DEFAULT_BREW_SETPOINT 93.0
 #define STEAM_SETPOINT 115.0
-/* После остановки пролива 30 с ограничиваем мощность, чтобы не перегревать (лимит зависит от уставки) */
-#define POST_BREW_COOLDOWN_MS 30000UL
-#define POST_BREW_CAP         50.0f   /* при высокой уставке (пар/пролив) */
-#define POST_BREW_CAP_LOW     20.0f   /* при низкой уставке (напр. 55 °C) */
-#define POST_BREW_CAP_MID     35.0f   /* при средней */
-#define POST_BREW_SETPOINT_LOW  65.0f
-#define POST_BREW_SETPOINT_MID  80.0f
-/* Когда пролив выключен и температура близка к уставке — греем очень аккуратно (по чуть-чуть) */
-#define NEAR_SETPOINT_DEG  2.0f
-#define NEAR_SETPOINT_CAP  28.0f
+/* Fallback уставки заваривания, если в настройках ещё нет значения */
+#define FALLBACK_BREW_SETPOINT 93.0f
+/* Во время пролива — полная мощность и подъём уставки на 5° для меньшей просадки */
+#define BREW_SETPOINT_BOOST  5.0f
+/* Ограничение мощности при приближении к уставке (нагрев). Пороги в % пути: 100% = уставка. */
+#define APPROACH_T_BASE    20.0f   /* база для процента (0% ≈ комнатная), 100% = setpoint */
+#define APPROACH_PCT_80    0.80f   /* при 80% пути к уставке → макс 50%, пауза 5 сек */
+#define APPROACH_PCT_90    0.90f   /* при 90% → 25%, ждём 5 сек */
+#define APPROACH_PCT_97    0.97f   /* при 97% → 15%, пауза 5 сек */
+#define APPROACH_CAP_Z1    50.0f
+#define APPROACH_CAP_Z2    17.0f   /* меньше мощность в зоне 90% — меньше перелёт */
+#define APPROACH_CAP_Z3    9.0f    /* мягкий финиш, перелёт ~0.5°, 9% чуть поддерживает против просадки */
+#define APPROACH_PAUSE_10_MS 5000UL /* пауза нагревa 5 сек при первом входе в зону 80% */
+#define APPROACH_PAUSE_90_MS 30000UL /* пауза при 90% (осталось 10% до цели), против перелёта после пролива */
+#define APPROACH_WAIT_MS    6000UL  /* задержка в зоне 90% перед переходом в зону 97% */
+#define APPROACH_PAUSE_MS   18000UL /* пауза в зоне 97% 18 с — больше выдержка, меньше перелёт */
+/* Учёт инерции: длинное окно ШИМ близко к цели, подогрев чуть выше уставки */
+#define PID_WINDOW_NEAR_MS  10000UL /* окно 10 с в зонах 90%/97% — реже включения, меньше перелёт */
+#define MAINTENANCE_HEAT_ABOVE 6.0f /* мощность 6% при 0…+0.3° выше уставки (против инерции остывания) */
+#define MAINTENANCE_BAND_ABOVE 0.3f /* полоса выше уставки для подогрева, °C */
+#define TEMP_TREND_COOLING_THRESHOLD 0.0f  /* подогрев выше уставки только когда T не растёт (tempRate ≤ 0), иначе не усиливаем перелёт */
 #define TEMP_EMA_ALPHA  0.3f
-#define TEMP_HISTORY_SIZE  60
-#define TEMP_HISTORY_INTERVAL_MS  1000UL
 
 float currentTemp = 25.0;
 
-PIDController pid(12.0, 0.25, 0.0);  // Ki 0.25 — меньше перелёт, чем при 0.4
+PIDController pid(9.0, 0.25, 32.0);   // Kd 32 — сильнее тормоз при росте T; PRE_SETPOINT_CAP 44% — мягче подход, перелёт 93→97 уменьшен
 
-const unsigned long pidWindow = 500;
-unsigned long windowStart = 0;
+const unsigned long pidWindow = 4000;  /* PWM window 2–5 s for SSR */
+unsigned long windowStart = 0;         /* начало текущего окна ШИМ */
 unsigned long lastTelemetryMs = 0;
-static unsigned long lastBrewEndMs = 0;
-static bool wasInBrew = false;
 static float tempFiltered = 0.0f;
 static bool tempFilterInitialized = false;
-static float tempHistory[TEMP_HISTORY_SIZE];
-static int tempHistoryIndex = 0;
-static int tempHistoryCount = 0;
-static unsigned long lastHistoryMs = 0;
+
+/* Состояние приближения к уставке: ограничение мощности по % пути (100% = setpoint) */
+static int approachZone = 0;              /* 0=далеко, 1=≥80%, 2=≥90%, 3=≥97% */
+static unsigned long approachPause10Until = 0; /* конец паузы 5 сек при входе в зону 80% */
+static unsigned long approachPause90Until = 0; /* конец паузы 14 сек при входе в зону 90% */
+static unsigned long approachWaitUntil = 0;  /* момент, после которого разрешён переход 2→3 */
+static unsigned long approachPauseUntil = 0;  /* момент окончания паузы в зоне 97% */
+
+/* Тренд температуры для подогрева выше уставки: не греем, если T ещё растёт по инерции */
+static float lastTempForTrend = 0.0f;
+static unsigned long lastTempTrendMs = 0;
+#define TEMP_TREND_MIN_DT_MS 500UL
 
 struct AutoTuneState {
   bool active = false;
   bool heating = true;
   bool initialized = false;
-  float setpoint = DEFAULT_BREW_SETPOINT;
+  float setpoint = 0;
   float outputHigh = 60.0f;
   float outputLow = 0.0f;
   float lastTemp = 0.0f;
@@ -84,7 +100,7 @@ enum Mode {
 };
 
 static Mode currentMode = MODE_BREW;
-static float brewSetpoint = DEFAULT_BREW_SETPOINT;
+static float brewSetpoint = FALLBACK_BREW_SETPOINT;
 static bool lastButtonState = HIGH;
 static bool lastButtonReading = HIGH;
 static unsigned long lastButtonMs = 0;
@@ -94,6 +110,7 @@ static unsigned long lastBrewButtonMs = 0;
 static unsigned long brewButtonPressMs = 0;
 static bool manualBrewActive = false;
 static bool brewLongActive = false;
+static bool brewButtonArmed = false;  /* true после BREW_BUTTON_ARM_AFTER_MS с момента загрузки */
 
 bool emergencyStop = false;
 String emergencyReason = "";
@@ -171,6 +188,14 @@ void runMax31865Diag() {
   Serial.println("MAX31865 diag: done");
 }
 
+static void resetApproachState() {
+  approachZone = 0;
+  approachPause10Until = 0;
+  approachPause90Until = 0;
+  approachWaitUntil = 0;
+  approachPauseUntil = 0;
+}
+
 void applyMode(Mode mode) {
   currentMode = mode;
   if (currentMode == MODE_STEAM) {
@@ -179,6 +204,7 @@ void applyMode(Mode mode) {
     pid.setSetpoint(brewSetpoint);
   }
   pid.reset();  // clear integral when mode/setpoint changes
+  resetApproachState();
   autoTuneApplySetpoint(pid.getSetpoint());
 }
 
@@ -204,6 +230,7 @@ void setHeaterStandby(bool standby) {
       pid.setSetpoint(brewSetpoint);
     pid.reset();
   }
+  resetApproachState();
   autoTuneApplySetpoint(pid.getSetpoint());
 }
 bool isSteamMode() { return currentMode == MODE_STEAM; }
@@ -216,6 +243,7 @@ void setBrewSetpoint(float sp) {
   if (currentMode == MODE_BREW) {
     pid.setSetpoint(brewSetpoint);
     pid.reset();  // avoid overshoot: clear integral when setpoint changes
+    resetApproachState();
   }
   autoTuneApplySetpoint(pid.getSetpoint());
 }
@@ -318,7 +346,7 @@ float autoTuneUpdate(float temp) {
 
 void loadSettings() {
   prefs.begin("espresso", true);
-  float sp = prefs.getFloat("brew_sp", DEFAULT_BREW_SETPOINT);
+  float sp = prefs.getFloat("brew_sp", FALLBACK_BREW_SETPOINT);
   unsigned long pre = prefs.getULong("pre_ms", DEFAULT_PREINFUSION_MS);
   unsigned long pause = prefs.getULong("pause_ms", DEFAULT_PAUSE_MS);
   unsigned long brew = prefs.getULong("brew_ms", DEFAULT_BREW_MS);
@@ -340,16 +368,6 @@ void saveSettings() {
   prefs.end();
 }
 
-String getTempHistoryJson() {
-  String s = "[";
-  for (int i = 0; i < tempHistoryCount; i++) {
-    if (i) s += ",";
-    s += String(tempHistory[(tempHistoryIndex + i) % TEMP_HISTORY_SIZE], 1);
-  }
-  s += "]";
-  return s;
-}
-
 void setup() {
   Serial.begin(115200);
   Serial.setTimeout(10);
@@ -365,7 +383,7 @@ void setup() {
 
   loadSettings();
   pid.setIntegralClamp(40);
-  pid.setDtLimits(0.1, 2.0);
+  pid.setDtLimits(0.5, 2.0);  // PID cycle 500 ms (variant B)
   pid.reset();
 
   wifiSetup();
@@ -423,6 +441,10 @@ void loop() {
     }
   }
 
+  if (!brewButtonArmed && (now > BREW_BUTTON_ARM_AFTER_MS)) {
+    brewButtonArmed = true;
+  }
+
   bool brewButtonReading = digitalRead(BREW_BUTTON_PIN);
   if (brewButtonReading != lastBrewButtonReading) {
     lastBrewButtonMs = now;
@@ -436,30 +458,24 @@ void loop() {
         brewLongActive = false;
         Serial.println("Brew button: down");
       } else {
-        if (!brewLongActive) {
-          unsigned long pressDuration = now - brewButtonPressMs;
-          if (pressDuration >= BREW_BUTTON_MIN_PRESS_MS) {
-            if (brewGetState() == IDLE) {
-              brewStart();
-              Serial.println("Brew button: short -> start");
-            } else {
-              brewStop();
-              Serial.println("Brew button: short -> stop");
-            }
-          }
-        } else {
-          manualBrewActive = false;
-          Serial.println("Brew button: long -> release");
+        /* Отпускание: останавливаем экстракцию, только если она ещё идёт (не завершилась по профилю) */
+        if (brewLongActive && brewGetState() != IDLE) {
+          brewStop();
+          Serial.println("Brew button: release -> stop extraction");
         }
+        brewLongActive = false;
+        manualBrewActive = false;
       }
     }
   }
-  if (lastBrewButtonState == LOW && !brewLongActive &&
+  /* Только удержание запускает экстракцию; короткое нажатие не делает ничего */
+  if (brewButtonArmed && lastBrewButtonState == LOW && !brewLongActive &&
       (now - brewButtonPressMs) > BREW_BUTTON_LONG_MS) {
     brewLongActive = true;
-    manualBrewActive = true;
-    brewStop();
-    Serial.println("Brew button: long -> hold");
+    if (brewGetState() == IDLE) {
+      brewStart();
+      Serial.println("Brew button: long -> start extraction");
+    }
   }
 
   float temp;
@@ -513,21 +529,18 @@ void loop() {
     currentTemp = temp;
   }
 
-  if (now - lastHistoryMs >= TEMP_HISTORY_INTERVAL_MS) {
-    lastHistoryMs = now;
-    tempHistory[tempHistoryIndex] = currentTemp;
-    tempHistoryIndex = (tempHistoryIndex + 1) % TEMP_HISTORY_SIZE;
-    if (tempHistoryCount < TEMP_HISTORY_SIZE) tempHistoryCount++;
-  }
-
   if (currentTemp > MAX_SAFE_TEMP) {
     triggerEmergencyStop("Temperature too high: " + String(currentTemp) + "°C");
   }
+
+  bool inBrew = (brewGetState() != IDLE || manualBrewActive);
 
   if (heaterStandby)
     pid.setSetpoint(HEATER_STANDBY_SETPOINT);
   else if (currentMode == MODE_STEAM)
     pid.setSetpoint(STEAM_SETPOINT);
+  else if (inBrew)
+    pid.setSetpoint(brewSetpoint + BREW_SETPOINT_BOOST);
   else
     pid.setSetpoint(brewSetpoint);
 
@@ -535,35 +548,79 @@ void loop() {
     ? autoTuneUpdate(currentTemp)
     : pid.compute(currentTemp);
 
-  bool inBrew = (brewGetState() != IDLE || manualBrewActive);
-  if (wasInBrew && !inBrew)
-    lastBrewEndMs = now;
-  wasInBrew = inBrew;
+  /* Ограничение мощности по % пути к уставке (100% = setpoint). Только при нагреве, не в проливе. */
+  if (!inBrew && !heaterStandby && !autoTune.active) {
+    float setpoint = pid.getSetpoint();
+    float range = setpoint - APPROACH_T_BASE;
+    float progress = (range > 0.1f) ? constrain((currentTemp - APPROACH_T_BASE) / range, 0.0f, 1.0f) : 0.0f;
+    progress = roundf(progress * 10.0f) / 10.0f;
 
-  if (inBrew) {
-    /* Во время пролива — нагрев до 100% по запросу PID */
-  } else if (lastBrewEndMs != 0 && (now - lastBrewEndMs) < POST_BREW_COOLDOWN_MS) {
-    float sp = pid.getSetpoint();
-    float postCap = (sp <= POST_BREW_SETPOINT_LOW) ? POST_BREW_CAP_LOW
-      : (sp <= POST_BREW_SETPOINT_MID) ? POST_BREW_CAP_MID
-      : POST_BREW_CAP;
-    power = min(power, postCap);
-  } else {
-    /* Пролив выключен и температура рядом с уставкой — включаем нагрев по чуть-чуть */
-    float err = pid.getSetpoint() - currentTemp;
-    if (err > 0 && err <= NEAR_SETPOINT_DEG)
-      power = min(power, (float)NEAR_SETPOINT_CAP);
+    if (progress < APPROACH_PCT_80) {
+      approachZone = 0;
+      approachPause10Until = 0;
+      approachPause90Until = 0;
+      approachWaitUntil = 0;
+      approachPauseUntil = 0;
+    } else if (progress < APPROACH_PCT_90) {
+      if (approachZone < 1) {
+        approachZone = 1;
+        approachPause10Until = now + APPROACH_PAUSE_10_MS;
+      }
+      if (now < approachPause10Until)
+        power = 0.0f;
+      else
+        power = min(power, APPROACH_CAP_Z1);
+    } else if (progress < APPROACH_PCT_97) {
+      if (approachZone < 2) {
+        approachZone = 2;
+        approachPause90Until = now + APPROACH_PAUSE_90_MS;
+        approachWaitUntil = now + APPROACH_WAIT_MS;
+      }
+      /* Пауза 8 сек при первом достижении 90% (осталось 10% до цели) — против перегрева после пролива */
+      if (now < approachPause90Until)
+        power = 0.0f;
+      else
+        power = min(power, APPROACH_CAP_Z2);
+    } else {
+      if (approachZone == 2 && now < approachWaitUntil) {
+        power = min(power, APPROACH_CAP_Z2);
+      } else {
+        if (approachZone < 3) {
+          approachZone = 3;
+          approachPauseUntil = now + APPROACH_PAUSE_MS;
+        }
+        power = min(power, APPROACH_CAP_Z3);
+      }
+    }
   }
 
-  if (now - windowStart > pidWindow)
-    windowStart += pidWindow;
+  /* Чуть выше уставки — подогрев только когда T не растёт по инерции (тренд падает или стабилен) */
+  float tempRate = 0.0f;
+  if (lastTempTrendMs != 0 && (now - lastTempTrendMs) >= TEMP_TREND_MIN_DT_MS)
+    tempRate = (currentTemp - lastTempForTrend) / ((now - lastTempTrendMs) / 1000.0f);
+  if (!inBrew && !heaterStandby && !autoTune.active && approachZone >= 3 &&
+      tempRate <= TEMP_TREND_COOLING_THRESHOLD) {
+    float err = pid.getSetpoint() - currentTemp;
+    if (err >= -MAINTENANCE_BAND_ABOVE && err < 0.0f)
+      power = max(power, MAINTENANCE_HEAT_ABOVE);
+  }
+  lastTempForTrend = currentTemp;
+  lastTempTrendMs = now;
+
+  if (inBrew)
+    power = 100.0f;
+
+  /* Окно ШИМ длиннее в зонах 90%/97% — реже включения, меньше перелёт от инерции */
+  unsigned long currentWindow = (approachZone >= 2) ? PID_WINDOW_NEAR_MS : pidWindow;
+  if (now - windowStart > currentWindow)
+    windowStart += currentWindow;
 
   if (temperatureSimulated()) {
     heaterOn = false;
     digitalWrite(SSR_HEATER_PIN, LOW);
     temperatureSimUpdate(power);
   } else {
-    heaterOn = ((power / 100.0f) * pidWindow > (now - windowStart));
+    heaterOn = ((power / 100.0f) * currentWindow > (now - windowStart));
     digitalWrite(SSR_HEATER_PIN, heaterOn ? HIGH : LOW);
   }
 

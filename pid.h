@@ -18,34 +18,47 @@ public:
     integral = 0;
     lastError = 0;
     lastTime = millis();
+    haveLastInput = false;
   }
 
   float compute(float input) {
     unsigned long now = millis();
     float dt = (now - lastTime) / 1000.0;
-    if (dt < minDt || dt > maxDt) {
+    if (dt < minDt)
+      return lastOutput;  /* не обновляем lastTime — dt накопит 500 ms и PID пересчитается */
+    if (dt > maxDt) {
       lastTime = now;
       return lastOutput;
     }
 
     float error = setpoint - input;
 
-    float derivative = (error - lastError) / dt;
+    // Derivative on measurement: -Kd * d(input)/dt — brakes when temp rises quickly (reduces overshoot)
+    float derivative = 0;
+    if (haveLastInput)
+      derivative = -(input - lastInput) / dt;
 
     // When at or above setpoint, zero integral so we don't overshoot or hold temp above setpoint
     if (error <= 0) integral = 0;
     else {
-      // Conditional integration when below setpoint to reduce windup at output limits
+      // Anti-windup (clamping): don't accumulate integral when output is saturated
       float nextIntegral = integral + error * dt;
       float output = Kp * error + Ki * nextIntegral + Kd * derivative;
-      if (!(output > outMax && error > 0))
+      if (output > outMax && error > 0) {
+        // At max output, don't increase integral
+      } else if (output < outMin && error < 0) {
+        // At min output, don't decrease integral (symmetric clamping)
+      } else {
         integral = constrain(nextIntegral, -iClamp, iClamp);
+      }
     }
     float output = Kp * error + Ki * integral + Kd * derivative;
 
     output = constrain(output, outMin, outMax);
 
     lastError = error;
+    lastInput = input;
+    haveLastInput = true;
     lastTime = now;
     lastOutput = output;
 
@@ -69,11 +82,13 @@ private:
 
   float integral = 0;
   float lastError = 0;
+  float lastInput = 0;
+  bool haveLastInput = false;
   float lastOutput = 0;
   unsigned long lastTime = 0;
 
   float outMin, outMax;
-  float iClamp = 50;   // защита от windup
-  float minDt = 0.05;  // 20 Hz max PID update rate
+  float iClamp = 50;   // integral clamp (anti-windup)
+  float minDt = 0.5;   // PID cycle 200-1000 ms (variant B: limit update rate here)
   float maxDt = 2.0;
 };
