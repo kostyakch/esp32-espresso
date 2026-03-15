@@ -24,7 +24,9 @@ public:
   float compute(float input) {
     unsigned long now = millis();
     float dt = (now - lastTime) / 1000.0;
-    if (dt < minDt || dt > maxDt) {
+    if (dt < minDt)
+      return lastOutput;  /* не обновляем lastTime — dt накопит 500 ms и PID пересчитается */
+    if (dt > maxDt) {
       lastTime = now;
       return lastOutput;
     }
