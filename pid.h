@@ -39,11 +39,16 @@ public:
     // When at or above setpoint, zero integral so we don't overshoot or hold temp above setpoint
     if (error <= 0) integral = 0;
     else {
-      // Conditional integration when below setpoint to reduce windup at output limits
+      // Anti-windup (clamping): don't accumulate integral when output is saturated
       float nextIntegral = integral + error * dt;
       float output = Kp * error + Ki * nextIntegral + Kd * derivative;
-      if (!(output > outMax && error > 0))
+      if (output > outMax && error > 0) {
+        // At max output, don't increase integral
+      } else if (output < outMin && error < 0) {
+        // At min output, don't decrease integral (symmetric clamping)
+      } else {
         integral = constrain(nextIntegral, -iClamp, iClamp);
+      }
     }
     float output = Kp * error + Ki * integral + Kd * derivative;
 
@@ -81,7 +86,7 @@ private:
   unsigned long lastTime = 0;
 
   float outMin, outMax;
-  float iClamp = 50;   // защита от windup
-  float minDt = 0.05;  // 20 Hz max PID update rate
+  float iClamp = 50;   // integral clamp (anti-windup)
+  float minDt = 0.5;   // PID cycle 200-1000 ms (variant B: limit update rate here)
   float maxDt = 2.0;
 };

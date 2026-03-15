@@ -33,14 +33,23 @@
 #define POST_BREW_CAP_MID     35.0f   /* при средней */
 #define POST_BREW_SETPOINT_LOW  65.0f
 #define POST_BREW_SETPOINT_MID  80.0f
-/* За 5° до уставки: пауза 5–10 с → смотрим, растёт ли T → если нет, слабый нагрев; цикл повторяется */
-#define PRE_SETPOINT_DEG    5.0f
-#define PRE_PAUSE_MS        7000UL   /* пауза нагревa (5–10 с) */
-#define PRE_LOW_POWER       28.0f    /* слабая мощность после паузы, если T не растёт */
-#define PRE_CYCLE_LOW_MS    8000UL   /* через столько сек слабого нагрева снова пауза (цикл) */
-/* Когда пролив выключен и температура близка к уставке — греем очень аккуратно (по чуть-чуть) */
-#define NEAR_SETPOINT_DEG  2.0f
-#define NEAR_SETPOINT_CAP  28.0f
+/* Трёхступенчатый ramp: далеко — полный нагрев, близко — сниженная мощность, у setpoint — PID */
+#define RAMP_FAR_DEG    10.0f   /* T < setpoint - 10°C → 100% */
+#define RAMP_NEAR_DEG    3.0f   /* T < setpoint - 3°C → RAMP_MID_POWER; 3° даёт плавнее выход на setpoint */
+#define RAMP_MID_POWER  28.0f   /* средняя зона, % — мягче подход, меньше перелёт */
+#define RAMP_PID_CAP_DEG  2.0f  /* за столько ° до setpoint ограничиваем выход PID */
+#define RAMP_PID_CAP_PCT  30.0f /* макс мощность в зоне подхода к setpoint, % */
+/* Зона 1–2° ниже setpoint: PID на слабой мощности — плавный подход, нагреватель включён */
+#define SOFT_APPROACH_ERR_LO  1.0f  /* err >= это — зона слабого подхода */
+#define SOFT_APPROACH_ERR_HI  2.0f  /* err <= это — зона слабого подхода */
+#define SOFT_APPROACH_PCT     26.0f /* макс мощность в зоне 1–2° ниже setpoint, % */
+/* Deadband около setpoint: в зоне ±DEADBAND_DEG — ограничение сверху и гарантированный минимум при T <= setpoint */
+#define DEADBAND_DEG     0.5f
+#define DEADBAND_CAP    40.0f   /* макс мощность в deadband */
+#define DEADBAND_MIN    27.0f   /* мин мощность в deadband при T <= setpoint — иначе нагреватель не включается и просадка до 90 */
+/* Предиктивное отключение: горизонт в секундах — больше = раньше режем нагрев */
+#define PREDICT_HORIZON_S  5.0f
+#define PREDICT_ERR_MAX    0.5f  /* предиктор только при err <= 0.5° — иначе режет нагрев при 91–92°C и температура не доходит до 93 */
 /* Во время пролива поднимаем уставку на 4–5 °C, чтобы PID не «успокаивался» на 93 и держал полную мощность — меньше просадка */
 #define BREW_SETPOINT_BOOST  5.0f
 #define TEMP_EMA_ALPHA  0.3f
@@ -51,7 +60,7 @@ float currentTemp = 25.0;
 
 PIDController pid(9.0, 0.25, 32.0);   // Kd 32 — сильнее тормоз при росте T; PRE_SETPOINT_CAP 44% — мягче подход, перелёт 93→97 уменьшен
 
-const unsigned long pidWindow = 500;
+const unsigned long pidWindow = 4000;  /* PWM window 2–5 s for SSR */
 unsigned long windowStart = 0;
 unsigned long lastTelemetryMs = 0;
 static unsigned long lastBrewEndMs = 0;
@@ -105,11 +114,10 @@ static bool manualBrewActive = false;
 static bool brewLongActive = false;
 static bool brewButtonArmed = false;  /* true после BREW_BUTTON_ARM_AFTER_MS с момента загрузки */
 
-/* Состояние зоны подхода к уставке (за 5°): пауза → проверка тренда → слабый нагрев, по циклу */
-static uint8_t approachPhase = 0;         /* 0 = пауза, 1 = слабый нагрев */
-static unsigned long approachPauseStartMs = 0;
-static float approachTempAtPause = 0.0f;
-static unsigned long approachLowStartMs = 0;
+/* Предиктивное отключение: dT/dt по отфильтрованной температуре */
+static float prevTempFiltered = 0.0f;
+static unsigned long lastPredictMs = 0;
+static bool prevTempInitialized = false;
 
 bool emergencyStop = false;
 String emergencyReason = "";
@@ -381,7 +389,7 @@ void setup() {
 
   loadSettings();
   pid.setIntegralClamp(40);
-  pid.setDtLimits(0.1, 2.0);
+  pid.setDtLimits(0.5, 2.0);  // PID cycle 500 ms (variant B)
   pid.reset();
 
   wifiSetup();
@@ -575,42 +583,50 @@ void loop() {
       : POST_BREW_CAP;
     power = min(power, postCap);
   } else {
-    float err = pid.getSetpoint() - currentTemp;
-    /* Вне зоны подхода — сброс состояния; в зоне 0..2° — мягкий лимит */
-    if (err > PRE_SETPOINT_DEG || err <= 0) {
-      approachPhase = 0;
-      approachPauseStartMs = 0;
-    }
-    if (err > 0 && err <= NEAR_SETPOINT_DEG)
-      power = min(power, (float)NEAR_SETPOINT_CAP);
+    float sp = pid.getSetpoint();
+    float err = sp - currentTemp;
 
-    /* Зона за 5° до цели: пауза 5–10 с → если T не растёт — слабый нагрев; затем снова пауза (цикл) */
-    if (err > 0 && err <= PRE_SETPOINT_DEG) {
-      if (approachPhase == 0) {
-        if (approachPauseStartMs == 0) {
-          approachPauseStartMs = now;
-          approachTempAtPause = currentTemp;
-        }
-        power = 0;
-        if ((now - approachPauseStartMs) >= PRE_PAUSE_MS) {
-          if (currentTemp > approachTempAtPause) {
-            /* ещё растёт по инерции — ждём дальше */
-            approachPauseStartMs = now;
-            approachTempAtPause = currentTemp;
-          } else {
-            approachPhase = 1;
-            approachLowStartMs = now;
-            power = PRE_LOW_POWER;
-          }
-        }
+    /* Трёхступенчатый ramp + зона 1–2° ниже setpoint: PID на слабой мощности */
+    if (err > RAMP_FAR_DEG) {
+      power = 100.0f;
+    } else if (err > RAMP_NEAR_DEG) {
+      power = RAMP_MID_POWER;
+    } else if (err > SOFT_APPROACH_ERR_HI) {
+      /* 2–3° до setpoint: PID без ограничения */
+    } else if (err > SOFT_APPROACH_ERR_LO) {
+      /* 1–2° ниже setpoint: PID на слабой мощности — плавный подход, нагреватель включён */
+      power = min(power, (float)SOFT_APPROACH_PCT);
+    } else if (err > 0) {
+      /* последний градус до setpoint */
+      power = min(power, (float)RAMP_PID_CAP_PCT);
+    }
+
+    /* Deadband: в зоне ±0.5°C — сверху не больше CAP; при T <= setpoint гарантируем минимум MIN, иначе нагреватель не включается */
+    if (fabsf(err) <= DEADBAND_DEG) {
+      power = min(power, DEADBAND_CAP);
+      if (err >= 0)
+        power = max(power, DEADBAND_MIN);
+    }
+
+    /* Предиктивное отключение только близко к setpoint (err <= PREDICT_ERR_MAX), иначе при восстановлении с 90→93 предиктор режет нагрев и температура не поднимается */
+    if (err > 0 && err <= PREDICT_ERR_MAX) {
+      if (!prevTempInitialized) {
+        prevTempFiltered = currentTemp;
+        lastPredictMs = now;
+        prevTempInitialized = true;
       } else {
-        power = PRE_LOW_POWER;
-        if ((now - approachLowStartMs) >= PRE_CYCLE_LOW_MS) {
-          approachPhase = 0;
-          approachPauseStartMs = now;
-          approachTempAtPause = currentTemp;
+        unsigned long elapsed = now - lastPredictMs;
+        if (elapsed >= 400) {
+          float dt_s = elapsed / 1000.0f;
+          float dT_dt = (currentTemp - prevTempFiltered) / dt_s;
+          prevTempFiltered = currentTemp;
+          lastPredictMs = now;
+          if (dT_dt > 0 && (currentTemp + PREDICT_HORIZON_S * dT_dt >= sp))
+            power = 0.0f;
         }
       }
+    } else {
+      prevTempInitialized = false;
     }
   }
 
