@@ -65,6 +65,23 @@ inline void httpSetup() {
     server.send(303);
   });
 
+  /* Применить время без перезагрузки (в т.ч. во время пролива — FSM читает значения каждый цикл) */
+  server.on("/api/set_times", HTTP_POST, []() {
+    if (server.hasArg("pre")) {
+      int v = server.arg("pre").toInt();
+      if (v >= 0) preinfusionMs = (unsigned long)v * 1000;
+    }
+    if (server.hasArg("pause")) {
+      int v = server.arg("pause").toInt();
+      if (v >= 0) pauseMs = (unsigned long)v * 1000;
+    }
+    if (server.hasArg("brew")) {
+      int v = server.arg("brew").toInt();
+      if (v >= 0) brewMs = (unsigned long)v * 1000;
+    }
+    server.send(200, "application/json", "{\"ok\":1}");
+  });
+
   server.on("/start", HTTP_POST, []() {
     brewStart();
     server.sendHeader("Location", "/");
