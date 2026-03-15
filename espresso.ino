@@ -35,12 +35,17 @@
 #define APPROACH_PCT_90    0.90f   /* при 90% → 25%, ждём 5 сек */
 #define APPROACH_PCT_97    0.97f   /* при 97% → 15%, пауза 5 сек */
 #define APPROACH_CAP_Z1    50.0f
-#define APPROACH_CAP_Z2    20.0f   /* 25→20% меньше перелёт после пролива */
-#define APPROACH_CAP_Z3    11.0f   /* чуть выше 10% — меньше просадка на 1° ниже цели */
+#define APPROACH_CAP_Z2    17.0f   /* меньше мощность в зоне 90% — меньше перелёт */
+#define APPROACH_CAP_Z3    9.0f    /* мягкий финиш, перелёт ~0.5°, 9% чуть поддерживает против просадки */
 #define APPROACH_PAUSE_10_MS 5000UL /* пауза нагревa 5 сек при первом входе в зону 80% */
 #define APPROACH_PAUSE_90_MS 30000UL /* пауза при 90% (осталось 10% до цели), против перелёта после пролива */
 #define APPROACH_WAIT_MS    6000UL  /* задержка в зоне 90% перед переходом в зону 97% */
-#define APPROACH_PAUSE_MS   15000UL /* пауза в зоне 97% короче (18→12 с) — меньше остывание ниже цели */
+#define APPROACH_PAUSE_MS   18000UL /* пауза в зоне 97% 18 с — больше выдержка, меньше перелёт */
+/* Учёт инерции: длинное окно ШИМ близко к цели, подогрев чуть выше уставки */
+#define PID_WINDOW_NEAR_MS  10000UL /* окно 10 с в зонах 90%/97% — реже включения, меньше перелёт */
+#define MAINTENANCE_HEAT_ABOVE 6.0f /* мощность 6% при 0…+0.3° выше уставки (против инерции остывания) */
+#define MAINTENANCE_BAND_ABOVE 0.3f /* полоса выше уставки для подогрева, °C */
+#define TEMP_TREND_COOLING_THRESHOLD 0.01f /* °C/s: подогрев выше уставки только при почти нулевом/отрицательном росте */
 #define TEMP_EMA_ALPHA  0.3f
 #define TEMP_HISTORY_SIZE  60
 #define TEMP_HISTORY_INTERVAL_MS  1000UL
@@ -50,7 +55,7 @@ float currentTemp = 25.0;
 PIDController pid(9.0, 0.25, 32.0);   // Kd 32 — сильнее тормоз при росте T; PRE_SETPOINT_CAP 44% — мягче подход, перелёт 93→97 уменьшен
 
 const unsigned long pidWindow = 4000;  /* PWM window 2–5 s for SSR */
-unsigned long windowStart = 0;
+unsigned long windowStart = 0;         /* начало текущего окна ШИМ */
 unsigned long lastTelemetryMs = 0;
 static float tempFiltered = 0.0f;
 static bool tempFilterInitialized = false;
@@ -65,6 +70,11 @@ static unsigned long approachPause10Until = 0; /* конец паузы 5 сек
 static unsigned long approachPause90Until = 0; /* конец паузы 14 сек при входе в зону 90% */
 static unsigned long approachWaitUntil = 0;  /* момент, после которого разрешён переход 2→3 */
 static unsigned long approachPauseUntil = 0;  /* момент окончания паузы в зоне 97% */
+
+/* Тренд температуры для подогрева выше уставки: не греем, если T ещё растёт по инерции */
+static float lastTempForTrend = 0.0f;
+static unsigned long lastTempTrendMs = 0;
+#define TEMP_TREND_MIN_DT_MS 500UL
 
 struct AutoTuneState {
   bool active = false;
@@ -607,18 +617,33 @@ void loop() {
     }
   }
 
+  /* Чуть выше уставки — подогрев только когда T не растёт по инерции (тренд падает или стабилен) */
+  float tempRate = 0.0f;
+  if (lastTempTrendMs != 0 && (now - lastTempTrendMs) >= TEMP_TREND_MIN_DT_MS)
+    tempRate = (currentTemp - lastTempForTrend) / ((now - lastTempTrendMs) / 1000.0f);
+  if (!inBrew && !heaterStandby && !autoTune.active && approachZone >= 3 &&
+      tempRate <= TEMP_TREND_COOLING_THRESHOLD) {
+    float err = pid.getSetpoint() - currentTemp;
+    if (err >= -MAINTENANCE_BAND_ABOVE && err < 0.0f)
+      power = max(power, MAINTENANCE_HEAT_ABOVE);
+  }
+  lastTempForTrend = currentTemp;
+  lastTempTrendMs = now;
+
   if (inBrew)
     power = 100.0f;
 
-  if (now - windowStart > pidWindow)
-    windowStart += pidWindow;
+  /* Окно ШИМ длиннее в зонах 90%/97% — реже включения, меньше перелёт от инерции */
+  unsigned long currentWindow = (approachZone >= 2) ? PID_WINDOW_NEAR_MS : pidWindow;
+  if (now - windowStart > currentWindow)
+    windowStart += currentWindow;
 
   if (temperatureSimulated()) {
     heaterOn = false;
     digitalWrite(SSR_HEATER_PIN, LOW);
     temperatureSimUpdate(power);
   } else {
-    heaterOn = ((power / 100.0f) * pidWindow > (now - windowStart));
+    heaterOn = ((power / 100.0f) * currentWindow > (now - windowStart));
     digitalWrite(SSR_HEATER_PIN, heaterOn ? HIGH : LOW);
   }
 
