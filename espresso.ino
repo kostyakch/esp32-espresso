@@ -118,6 +118,7 @@ bool heaterOn = false;
 /* После загрузки нагрев всегда включён (standby = false) */
 bool heaterStandby = false;
 #define HEATER_STANDBY_SETPOINT 20.0f
+#define EMERGENCY_RESET_TEMP 90.0f  /* сброс аварии при охлаждении ниже этой температуры */
 
 void triggerEmergencyStop(String reason) {
   if (!emergencyStop) {
@@ -530,6 +531,10 @@ void loop() {
   float safeLimit = (currentMode == MODE_STEAM) ? MAX_SAFE_TEMP_STEAM : MAX_SAFE_TEMP;
   if (currentTemp > safeLimit) {
     triggerEmergencyStop("Temperature too high: " + String(currentTemp) + "°C");
+  } else if (emergencyStop && currentTemp < EMERGENCY_RESET_TEMP) {
+    emergencyStop = false;
+    emergencyReason = "";
+    Serial.println("Emergency cleared: T < " + String(EMERGENCY_RESET_TEMP) + "°C");
   }
 
   bool inBrew = (brewGetState() != IDLE || manualBrewActive);
