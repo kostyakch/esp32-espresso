@@ -33,9 +33,11 @@
 #define POST_BREW_CAP_MID     35.0f   /* при средней */
 #define POST_BREW_SETPOINT_LOW  65.0f
 #define POST_BREW_SETPOINT_MID  80.0f
-/* За 5° до уставки начинаем ограничивать мощность — торможение до цели, меньше перелёт */
-#define PRE_SETPOINT_DEG   5.0f
-#define PRE_SETPOINT_CAP   44.0f
+/* За 5° до уставки: пауза 5–10 с → смотрим, растёт ли T → если нет, слабый нагрев; цикл повторяется */
+#define PRE_SETPOINT_DEG    5.0f
+#define PRE_PAUSE_MS        7000UL   /* пауза нагревa (5–10 с) */
+#define PRE_LOW_POWER       28.0f    /* слабая мощность после паузы, если T не растёт */
+#define PRE_CYCLE_LOW_MS    8000UL   /* через столько сек слабого нагрева снова пауза (цикл) */
 /* Когда пролив выключен и температура близка к уставке — греем очень аккуратно (по чуть-чуть) */
 #define NEAR_SETPOINT_DEG  2.0f
 #define NEAR_SETPOINT_CAP  28.0f
@@ -102,6 +104,12 @@ static unsigned long brewButtonPressMs = 0;
 static bool manualBrewActive = false;
 static bool brewLongActive = false;
 static bool brewButtonArmed = false;  /* true после BREW_BUTTON_ARM_AFTER_MS с момента загрузки */
+
+/* Состояние зоны подхода к уставке (за 5°): пауза → проверка тренда → слабый нагрев, по циклу */
+static uint8_t approachPhase = 0;         /* 0 = пауза, 1 = слабый нагрев */
+static unsigned long approachPauseStartMs = 0;
+static float approachTempAtPause = 0.0f;
+static unsigned long approachLowStartMs = 0;
 
 bool emergencyStop = false;
 String emergencyReason = "";
@@ -558,7 +566,8 @@ void loop() {
     : pid.compute(currentTemp);
 
   if (inBrew) {
-    /* Во время пролива — нагрев до 100% по запросу PID */
+    /* Во время пролива — принудительно 100% мощности, чтобы меньше просадка температуры */
+    power = 100.0f;
   } else if (lastBrewEndMs != 0 && (now - lastBrewEndMs) < POST_BREW_COOLDOWN_MS) {
     float sp = pid.getSetpoint();
     float postCap = (sp <= POST_BREW_SETPOINT_LOW) ? POST_BREW_CAP_LOW
@@ -566,12 +575,43 @@ void loop() {
       : POST_BREW_CAP;
     power = min(power, postCap);
   } else {
-    /* Пролив выключен: за 5° до уставки — ограничиваем мощность (торможение), в 2° — ещё мягче */
     float err = pid.getSetpoint() - currentTemp;
-    if (err > 0 && err <= PRE_SETPOINT_DEG)
-      power = min(power, (float)PRE_SETPOINT_CAP);
+    /* Вне зоны подхода — сброс состояния; в зоне 0..2° — мягкий лимит */
+    if (err > PRE_SETPOINT_DEG || err <= 0) {
+      approachPhase = 0;
+      approachPauseStartMs = 0;
+    }
     if (err > 0 && err <= NEAR_SETPOINT_DEG)
       power = min(power, (float)NEAR_SETPOINT_CAP);
+
+    /* Зона за 5° до цели: пауза 5–10 с → если T не растёт — слабый нагрев; затем снова пауза (цикл) */
+    if (err > 0 && err <= PRE_SETPOINT_DEG) {
+      if (approachPhase == 0) {
+        if (approachPauseStartMs == 0) {
+          approachPauseStartMs = now;
+          approachTempAtPause = currentTemp;
+        }
+        power = 0;
+        if ((now - approachPauseStartMs) >= PRE_PAUSE_MS) {
+          if (currentTemp > approachTempAtPause) {
+            /* ещё растёт по инерции — ждём дальше */
+            approachPauseStartMs = now;
+            approachTempAtPause = currentTemp;
+          } else {
+            approachPhase = 1;
+            approachLowStartMs = now;
+            power = PRE_LOW_POWER;
+          }
+        }
+      } else {
+        power = PRE_LOW_POWER;
+        if ((now - approachLowStartMs) >= PRE_CYCLE_LOW_MS) {
+          approachPhase = 0;
+          approachPauseStartMs = now;
+          approachTempAtPause = currentTemp;
+        }
+      }
+    }
   }
 
   if (now - windowStart > pidWindow)
