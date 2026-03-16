@@ -32,7 +32,7 @@
 /* Ограничение мощности при приближении к уставке (landing). Пороги в % пути: 100% = setpoint. */
 #define APPROACH_T_BASE       20.0f   /* база для процента (0% ≈ комнатная), 100% = setpoint */
 #define LANDING_START_PCT     0.70f   /* начало плавного снижения мощности (70% пути) */
-#define LANDING_CAP_FAR       85.0f   /* макс мощность до посадки (далеко от цели) */
+#define LANDING_CAP_FAR       82.0f   /* макс мощность до посадки (далеко от цели) */
 #define LANDING_CAP_3         3.0f    /* макс мощность PID у самой цели */
 /* Учёт инерции: длинное окно ШИМ близко к цели, подогрев чуть выше уставки */
 #define PID_WINDOW_NEAR_MS  20000UL /* окно 10 с в зонах 90%/97% — реже включения, меньше перелёт */
@@ -53,6 +53,10 @@ static bool tempFilterInitialized = false;
 
 /* Состояние приближения к уставке (landing): ограничение мощности по % пути (100% = setpoint) */
 static int approachZone = 0;                 /* 0=далеко, 1=посадка активна (≥LANDING_START_PCT) */
+
+/* Пауза нагрева после окончания пролива, чтобы отыграла инерция */
+static bool lastInBrew = false;
+static unsigned long brewEndPauseUntil = 0;
 
 /* Тренд температуры для подогрева выше уставки: не греем, если T ещё растёт по инерции */
 static float lastTempForTrend = 0.0f;
@@ -524,6 +528,11 @@ void loop() {
 
   bool inBrew = (brewGetState() != IDLE || manualBrewActive);
 
+  /* Отслеживаем момент окончания пролива, чтобы задать паузу перед возобновлением PID-нагрева */
+  if (!inBrew && lastInBrew && !heaterStandby && !autoTune.active) {
+    brewEndPauseUntil = now + PID_WINDOW_NEAR_MS;
+  }
+
   if (heaterStandby)
     pid.setSetpoint(HEATER_STANDBY_SETPOINT);
   else if (currentMode == MODE_STEAM)
@@ -578,6 +587,16 @@ void loop() {
   lastTempForTrend = currentTemp;
   lastTempTrendMs = now;
 
+  /* Пауза нагрева сразу после пролива: выдерживаем PID_WINDOW_NEAR_MS без нагрева */
+  if (!inBrew && brewEndPauseUntil != 0) {
+    if (now < brewEndPauseUntil) {
+      power = 0.0f;
+      approachZone = 1;  /* считаем, что мы в посадочной фазе для длинного окна */
+    } else {
+      brewEndPauseUntil = 0;
+    }
+  }
+
   /* Окно ШИМ длиннее в посадочной фазе — реже включения, меньше перелёт от инерции */
   unsigned long currentWindow = (approachZone >= 1) ? PID_WINDOW_NEAR_MS : pidWindow;
   if (now - windowStart > currentWindow)
@@ -593,6 +612,8 @@ void loop() {
       heaterOn = false;
     digitalWrite(SSR_HEATER_PIN, heaterOn ? HIGH : LOW);
   }
+
+  lastInBrew = inBrew;
 
   updatePump();
   logTelemetry(power);
