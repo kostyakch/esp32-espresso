@@ -1,26 +1,26 @@
 #pragma once
 #include <Arduino.h>
 
-enum BrewState { IDLE, PREINFUSION, PAUSE, BREW };
+enum BrewState { IDLE, PREINFUSION, BREW, DECLINE };
 
 static BrewState brewState = IDLE;
 static unsigned long stateStart = 0;
 
 static const unsigned long DEFAULT_PREINFUSION_MS = 2000;
-static const unsigned long DEFAULT_PAUSE_MS       = 4000;
 static const unsigned long DEFAULT_BREW_MS        = 25000;
+static const unsigned long DEFAULT_FINISH_MS     = 5000;
 
 static unsigned long preinfusionMs = DEFAULT_PREINFUSION_MS;
-static unsigned long pauseMs       = DEFAULT_PAUSE_MS;
 static unsigned long brewMs        = DEFAULT_BREW_MS;
+static unsigned long finishMs      = DEFAULT_FINISH_MS;
 
 inline BrewState brewGetState() { return brewState; }
 inline const char* brewGetStateName() {
   switch (brewState) {
     case IDLE: return "idle";
     case PREINFUSION: return "preinfusion";
-    case PAUSE: return "pause";
     case BREW: return "brew";
+    case DECLINE: return "decline";
   }
   return "idle";
 }
@@ -29,8 +29,6 @@ inline void brewStart() {
   stateStart = millis();
   if (preinfusionMs > 0)
     brewState = PREINFUSION;
-  else if (pauseMs > 0)
-    brewState = PAUSE;
   else
     brewState = BREW;
 }
@@ -43,10 +41,10 @@ inline void brewSetTempirature() {
   brewState = IDLE;
 }
 
-inline void brewSetTimes(unsigned long pre, unsigned long pause, unsigned long brew) {
+inline void brewSetTimes(unsigned long pre, unsigned long brew, unsigned long finish) {
   preinfusionMs = pre;
-  pauseMs = pause;
   brewMs = brew;
+  finishMs = finish;
 }
 
 inline void brewLoop() {
@@ -60,17 +58,17 @@ inline void brewLoop() {
     case PREINFUSION:
       if (elapsed >= preinfusionMs) {
         stateStart = millis();
-        brewState = (pauseMs > 0) ? PAUSE : BREW;
-      }
-      break;
-    case PAUSE:
-      if (elapsed >= pauseMs) {
-        stateStart = millis();
         brewState = BREW;
       }
       break;
     case BREW:
       if (elapsed >= brewMs) {
+        stateStart = millis();
+        brewState = (finishMs > 0) ? DECLINE : IDLE;
+      }
+      break;
+    case DECLINE:
+      if (elapsed >= finishMs) {
         brewState = IDLE;
       }
       break;
@@ -82,8 +80,8 @@ inline void brewLoop() {
 inline unsigned long brewGetPhaseTotalMs() {
   switch (brewState) {
     case PREINFUSION: return preinfusionMs;
-    case PAUSE: return pauseMs;
     case BREW: return brewMs;
+    case DECLINE: return finishMs;
     default: return 0;
   }
 }
@@ -100,3 +98,7 @@ inline unsigned long brewGetRemainingMs() {
   unsigned long elapsed = brewGetElapsedMs();
   return (total > elapsed) ? (total - elapsed) : 0;
 }
+
+inline unsigned long brewGetPreinfusionMs() { return preinfusionMs; }
+inline unsigned long brewGetBrewMs() { return brewMs; }
+inline unsigned long brewGetFinishMs() { return finishMs; }

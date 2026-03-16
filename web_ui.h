@@ -6,9 +6,10 @@ extern float currentTemp;
 extern PIDController pid;
 extern unsigned long brewMs;
 extern unsigned long preinfusionMs;
-extern unsigned long pauseMs;
+extern unsigned long finishMs;
 extern float getBrewSetpoint();
 extern float getSteamSetpoint();
+extern float getPumpPowerPercent();
 extern bool emergencyStop;
 extern String emergencyReason;
 
@@ -93,9 +94,11 @@ inline String renderHomePage() {
     "<div class='note'>Пар: " + String(getSteamSetpoint(),1) + " C</div>"
     "<div class='row' style='margin-top:12px;'>"
     "<div><label>Предсмачивание (с)</label><input id='pre_sec' name='pre' inputmode='numeric' value='" + String(preinfusionMs/1000) + "'></div>"
-    "<div><label>Пауза (с)</label><input id='pause_sec' name='pause' inputmode='numeric' value='" + String(pauseMs/1000) + "'></div>"
+    "<div><label>Экстракция (с)</label><input id='brew_sec' name='brew' type='number' min='5' max='90' value='" + String(brewMs/1000) + "'></div>"
     "</div>"
-    "<div style='margin-top:12px;'><label>Экстракция (с)</label><input id='brew_sec' name='brew' type='number' min='5' max='90' value='" + String(brewMs/1000) + "'></div>"
+    "<div style='margin-top:12px;'><label>Время завершения (с)</label><input id='finish_sec' name='finish' inputmode='numeric' value='" + String(finishMs/1000) + "'></div>"
+    "<div class='brew-slider-wrap' style='margin-top:12px;'><label>Мощность помпы (%)</label><input id='pump_pct' name='pump_pct' type='range' min='0' max='100' step='1' value='" + String((int)getPumpPowerPercent()) + "'><input id='pump_pct_num' type='number' min='0' max='100' value='" + String((int)getPumpPowerPercent()) + "' style='width:4em;'></div>"
+    "<div class='note'>Полная мощность во время экстракции</div>"
     "<div style='margin-top:14px;'><button class='save' type='submit'>Сохранить</button></div>"
     "</form>"
     "<div class='card'>"
@@ -115,8 +118,8 @@ inline String renderHomePage() {
     "</div>"
     "</div>"
     "<script>"
-    "const stateMap={idle:'Ожидание',preinfusion:'Предсмачивание',pause:'Пауза',brew:'Экстракция'};"
-    "const phaseMap={idle:'—',preinfusion:'Предсмачивание',pause:'Пауза',brew:'Экстракция'};"
+    "const stateMap={idle:'Ожидание',preinfusion:'Предсмачивание',brew:'Пролив',decline:'Завершение'};"
+    "const phaseMap={idle:'—',preinfusion:'Предсмачивание',brew:'Пролив',decline:'Завершение'};"
     "function fmtMs(ms){const s=Math.max(0,Math.floor(ms/1000));const m=Math.floor(s/60);const r=s%60;return m+':' + (r<10?'0':'')+r;}"
     "async function tick(){"
     "try{const r=await fetch('/api/status',{cache:'no-store'});const d=await r.json();"
@@ -146,22 +149,28 @@ inline String renderHomePage() {
     "document.getElementById('progress').style.width=pct+'%';"
     "var brewSl=document.getElementById('brew_slider');var brewF=document.getElementById('brew_sec');"
     "if(brewSl&&brewF&&d.state==='brew'&&total>0){var sec=Math.round(total/1000);sec=Math.max(5,Math.min(90,sec));brewSl.value=sec;brewF.value=sec;}"
+    "if(d.pump_pct!=null){var pp=document.getElementById('pump_pct');var pn=document.getElementById('pump_pct_num');if(pp)pp.value=Math.round(d.pump_pct);if(pn)pn.value=Math.round(d.pump_pct);}"
     "}catch(e){}"
     "}"
     "var timesDebounce=null;"
     "function sendTimes(){"
-    "var pre=document.getElementById('pre_sec');var pause=document.getElementById('pause_sec');var brew=document.getElementById('brew_sec');"
-    "if(!pre||!pause||!brew)return;"
-    "var fd=new FormData();fd.append('pre',pre.value||'0');fd.append('pause',pause.value||'0');fd.append('brew',brew.value||'0');"
+    "var pre=document.getElementById('pre_sec');var brew=document.getElementById('brew_sec');var finish=document.getElementById('finish_sec');var pumpPct=document.getElementById('pump_pct');"
+    "if(!pre||!brew||!finish)return;"
+    "var fd=new FormData();fd.append('pre',pre.value||'0');fd.append('brew',brew.value||'0');fd.append('finish',finish.value||'0');"
+    "if(pumpPct)fd.append('pump_pct',pumpPct.value);"
     "fetch('/api/set_times',{method:'POST',body:fd}).catch(function(){});"
     "}"
     "function scheduleSendTimes(){if(timesDebounce)clearTimeout(timesDebounce);timesDebounce=setTimeout(sendTimes,400);}"
     "(function(){"
-    "var pre=document.getElementById('pre_sec');var pause=document.getElementById('pause_sec');var brew=document.getElementById('brew_sec');var brewSl=document.getElementById('brew_slider');"
+    "var pre=document.getElementById('pre_sec');var finish=document.getElementById('finish_sec');var brew=document.getElementById('brew_sec');var brewSl=document.getElementById('brew_slider');"
+    "var pumpPct=document.getElementById('pump_pct');var pumpPctNum=document.getElementById('pump_pct_num');"
     "if(pre){pre.addEventListener('change',sendTimes);pre.addEventListener('input',scheduleSendTimes);}"
-    "if(pause){pause.addEventListener('change',sendTimes);pause.addEventListener('input',scheduleSendTimes);}"
+    "if(finish){finish.addEventListener('change',sendTimes);finish.addEventListener('input',scheduleSendTimes);}"
     "if(brew){brew.addEventListener('change',function(){if(brewSl){brewSl.value=brew.value;}sendTimes();});brew.addEventListener('input',function(){if(brewSl){brewSl.value=brew.value;}scheduleSendTimes();});}"
     "if(brewSl){brewSl.addEventListener('input',function(){var v=brewSl.value;if(brew){brew.value=v;}sendTimes();});brewSl.addEventListener('change',function(){var v=brewSl.value;if(brew){brew.value=v;}sendTimes();});}"
+    "if(pumpPct&&pumpPctNum){function syncPump(){var v=pumpPct.value;pumpPctNum.value=v;sendTimes();}"
+    "pumpPct.addEventListener('input',syncPump);pumpPct.addEventListener('change',syncPump);"
+    "pumpPctNum.addEventListener('change',function(){var v=Math.max(0,Math.min(100,parseInt(pumpPctNum.value,10)||0));pumpPct.value=v;pumpPctNum.value=v;sendTimes();});}"
     "})();"
     "setInterval(tick,1000);tick();"
     "</script>"

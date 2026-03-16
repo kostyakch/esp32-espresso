@@ -21,6 +21,11 @@
 // PT100 + MAX31865 (SPI): CS=GPIO5, MOSI=GPIO23, MISO=GPIO19, CLK=GPIO18, 3V3, GND
 // Heater SSR (RexC-100 SSR-40DA): IN+=GPIO26, IN-=GND, AC load in series with heater
 // Pump SSR (SSR-10DA/SSR-25DA): IN+=GPIO27, IN-=GND, AC load in series with pump
+// Pump: burst modulation, Power (%) = ON_time / Period. Smooth: shorter period + slots spread across period.
+#define PUMP_BURST_PERIOD_MS 100
+#define PUMP_SLOT_MS         10   /* period divided into slots for even distribution */
+#define DEFAULT_PUMP_POWER_PCT 100.0f   /* 100% = full flow, 0% = off within burst */
+#define PROFILE_PUMP_MIN_PCT   10.0f    /* min power during preinfusion ramp-up and decline ramp-down */
 // Brew button: GPIO33 -> GND (internal pull-up enabled)
 // Steam mode button: GPIO32 -> GND (internal pull-up enabled)
 
@@ -105,6 +110,7 @@ static unsigned long brewButtonPressMs = 0;
 static bool manualBrewActive = false;
 static bool brewLongActive = false;
 static bool brewButtonArmed = false;  /* true после BREW_BUTTON_ARM_AFTER_MS с момента загрузки */
+static float pumpPowerPercent = DEFAULT_PUMP_POWER_PCT;  /* 0..100, burst modulation */
 
 bool emergencyStop = false;
 String emergencyReason = "";
@@ -201,8 +207,48 @@ void applyMode(Mode mode) {
 
 void updatePump() {
   BrewState state = brewGetState();
-  bool pumpOn = manualBrewActive || state == PREINFUSION || state == BREW;
-  digitalWrite(SSR_PUMP_PIN, pumpOn ? HIGH : LOW);
+  bool pumpEnabled = manualBrewActive || state == PREINFUSION || state == BREW || state == DECLINE;
+  if (!pumpEnabled) {
+    digitalWrite(SSR_PUMP_PIN, LOW);
+    return;
+  }
+  float maxPct = constrain(pumpPowerPercent, 0.0f, 100.0f);
+  float pct = maxPct;
+  if (!manualBrewActive) {
+    unsigned long elapsed = brewGetElapsedMs();
+    unsigned long total = brewGetPhaseTotalMs();
+    if (state == PREINFUSION && total > 0) {
+      /* Ramp from PROFILE_PUMP_MIN_PCT to max over preinfusion */
+      float frac = (float)elapsed / (float)brewGetPreinfusionMs();
+      if (frac > 1.0f) frac = 1.0f;
+      pct = PROFILE_PUMP_MIN_PCT + (maxPct - PROFILE_PUMP_MIN_PCT) * frac;
+    } else if (state == DECLINE && total > 0) {
+      /* Ramp from max down to PROFILE_PUMP_MIN_PCT over finish phase */
+      float frac = (float)elapsed / (float)brewGetFinishMs();
+      if (frac > 1.0f) frac = 1.0f;
+      pct = maxPct - (maxPct - PROFILE_PUMP_MIN_PCT) * frac;
+    }
+    pct = constrain(pct, PROFILE_PUMP_MIN_PCT, maxPct);
+  }
+  const unsigned long totalSlots = PUMP_BURST_PERIOD_MS / PUMP_SLOT_MS;
+  if (pct <= 0.0f) {
+    digitalWrite(SSR_PUMP_PIN, LOW);
+    return;
+  }
+  if (pct >= 100.0f) {
+    digitalWrite(SSR_PUMP_PIN, HIGH);
+    return;
+  }
+  /* Evenly distributed slots: same duty cycle, ON pulses spread across period → smoother flow/sound */
+  unsigned long t = millis() % PUMP_BURST_PERIOD_MS;
+  unsigned long slot = t / PUMP_SLOT_MS;
+  if (slot >= totalSlots) slot = totalSlots - 1;
+  unsigned long numOnSlots = (unsigned long)((pct / 100.0f) * (float)totalSlots + 0.5f);
+  if (numOnSlots > totalSlots) numOnSlots = totalSlots;
+  unsigned long a = (slot * numOnSlots + totalSlots / 2) / totalSlots;
+  unsigned long b = ((slot + 1) * numOnSlots + totalSlots / 2) / totalSlots;
+  bool slotOn = (b > a);
+  digitalWrite(SSR_PUMP_PIN, slotOn ? HIGH : LOW);
 }
 
 void setModeBrew() { applyMode(MODE_BREW); }
@@ -229,6 +275,10 @@ const char* getModeName() { return currentMode == MODE_STEAM ? "steam" : "brew";
 float getBrewSetpoint() { return brewSetpoint; }
 float getSteamSetpoint() { return STEAM_SETPOINT; }
 bool isManualBrewActive() { return manualBrewActive; }
+float getPumpPowerPercent() { return pumpPowerPercent; }
+void setPumpPowerPercent(float pct) {
+  pumpPowerPercent = constrain(pct, 0.0f, 100.0f);
+}
 void setBrewSetpoint(float sp) {
   brewSetpoint = sp;
   if (currentMode == MODE_BREW) {
@@ -339,23 +389,28 @@ void loadSettings() {
   prefs.begin("espresso", true);
   float sp = prefs.getFloat("brew_sp", FALLBACK_BREW_SETPOINT);
   unsigned long pre = prefs.getULong("pre_ms", DEFAULT_PREINFUSION_MS);
-  unsigned long pause = prefs.getULong("pause_ms", DEFAULT_PAUSE_MS);
   unsigned long brew = prefs.getULong("brew_ms", DEFAULT_BREW_MS);
+  unsigned long finish = prefs.getULong("finish_ms", 0);
+  if (finish == 0) finish = prefs.getULong("pause_ms", DEFAULT_FINISH_MS);  /* migration from old pause */
+  if (finish == 0) finish = DEFAULT_FINISH_MS;
+  pumpPowerPercent = prefs.getFloat("pump_pct", DEFAULT_PUMP_POWER_PCT);
+  pumpPowerPercent = constrain(pumpPowerPercent, 0.0f, 100.0f);
   prefs.end();
 
   brewSetpoint = sp;
   applyMode(MODE_BREW);
   preinfusionMs = pre;
-  pauseMs = pause;
   brewMs = brew;
+  finishMs = finish;
 }
 
 void saveSettings() {
   prefs.begin("espresso", false);
   prefs.putFloat("brew_sp", brewSetpoint);
   prefs.putULong("pre_ms", preinfusionMs);
-  prefs.putULong("pause_ms", pauseMs);
   prefs.putULong("brew_ms", brewMs);
+  prefs.putULong("finish_ms", finishMs);
+  prefs.putFloat("pump_pct", pumpPowerPercent);
   prefs.end();
 }
 
