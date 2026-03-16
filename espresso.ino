@@ -543,14 +543,18 @@ void loop() {
     pid.setSetpoint(HEATER_STANDBY_SETPOINT);
   else if (currentMode == MODE_STEAM)
     pid.setSetpoint(STEAM_SETPOINT);
-  else if (inBrew)
-    pid.setSetpoint(brewSetpoint + BREW_SETPOINT_BOOST);
   else
     pid.setSetpoint(brewSetpoint);
 
-  float power = autoTune.active
-    ? autoTuneUpdate(currentTemp)
-    : pid.compute(currentTemp);
+  float power;
+  if (autoTune.active) {
+    power = autoTuneUpdate(currentTemp);
+  } else if (inBrew) {
+    /* Во время пролива PID не используется, нагреватель на 100% */
+    power = 100.0f;
+  } else {
+    power = pid.compute(currentTemp);
+  }
 
   /* Ограничение мощности по % пути к уставке (100% = setpoint). Только при нагреве, не в проливе. */
   if (!inBrew && !heaterStandby && !autoTune.active) {
@@ -610,9 +614,6 @@ void loop() {
   }
   lastTempForTrend = currentTemp;
   lastTempTrendMs = now;
-
-  if (inBrew)
-    power = 100.0f;
 
   /* Окно ШИМ длиннее в зонах 90%/97% — реже включения, меньше перелёт от инерции */
   unsigned long currentWindow = (approachZone >= 2) ? PID_WINDOW_NEAR_MS : pidWindow;
