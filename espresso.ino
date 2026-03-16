@@ -33,12 +33,13 @@
 #define APPROACH_T_BASE       20.0f   /* база для процента (0% ≈ комнатная), 100% = setpoint */
 #define LANDING_START_PCT     0.70f   /* начало плавного снижения мощности (70% пути) */
 #define LANDING_CAP_FAR       82.0f   /* макс мощность до посадки (далеко от цели) */
-#define LANDING_CAP_3         3.0f    /* макс мощность PID у самой цели */
-/* Учёт инерции: длинное окно ШИМ близко к цели, подогрев чуть выше уставки */
-#define PID_WINDOW_NEAR_MS  20000UL /* окно 10 с в зонах 90%/97% — реже включения, меньше перелёт */
-#define MAINTENANCE_HEAT_ABOVE 6.0f /* мощность 6% при 0…+0.3° выше уставки (против инерции остывания) */
-#define MAINTENANCE_BAND_ABOVE 0.3f /* полоса выше уставки для подогрева, °C */
-#define TEMP_TREND_COOLING_THRESHOLD 0.0f  /* подогрев выше уставки только когда T не растёт (tempRate ≤ 0), иначе не усиливаем перелёт */
+#define LANDING_CAP_3         3.5f    /* макс мощность PID у самой цели (чуть выше для компенсации ~0.4° недогрева) */
+/* Учёт инерции и пауза после пролива: длинное окно ШИМ близко к цели, подогрев чуть выше уставки */
+#define PID_WINDOW_NEAR_MS        15000UL /* окно 15 с в посадочной фазе — реже включения, меньше перелёт */
+#define BREW_END_PAUSE_MS        30000UL /* пауза после экстракции перед возобновлением нагрева */
+#define MAINTENANCE_HEAT_ABOVE 5.0f /* мощность 5% при 0…+0.3° выше уставки (против инерции остывания) */
+#define MAINTENANCE_BAND_ABOVE 0.4f /* полоса выше уставки для подогрева, °C */
+#define TEMP_TREND_COOLING_THRESHOLD 0.2f  /* подогрев выше уставки только когда T не растёт (tempRate ≤ 0), иначе не усиливаем перелёт */
 #define TEMP_EMA_ALPHA  0.3f
 
 float currentTemp = 25.0;
@@ -530,7 +531,7 @@ void loop() {
 
   /* Отслеживаем момент окончания пролива, чтобы задать паузу перед возобновлением PID-нагрева */
   if (!inBrew && lastInBrew && !heaterStandby && !autoTune.active) {
-    brewEndPauseUntil = now + PID_WINDOW_NEAR_MS;
+    brewEndPauseUntil = now + BREW_END_PAUSE_MS;
   }
 
   if (heaterStandby)
@@ -587,7 +588,7 @@ void loop() {
   lastTempForTrend = currentTemp;
   lastTempTrendMs = now;
 
-  /* Пауза нагрева сразу после пролива: выдерживаем PID_WINDOW_NEAR_MS без нагрева */
+  /* Пауза нагрева сразу после пролива: выдерживаем BREW_END_PAUSE_MS без нагрева */
   if (!inBrew && brewEndPauseUntil != 0) {
     if (now < brewEndPauseUntil) {
       power = 0.0f;
