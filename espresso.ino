@@ -29,20 +29,13 @@
 #define FALLBACK_BREW_SETPOINT 90.0f
 /* Во время пролива — полная мощность и подъём уставки на 5° для меньшей просадки */
 #define BREW_SETPOINT_BOOST  5.0f
-/* Ограничение мощности при приближении к уставке (нагрев). Пороги в % пути: 100% = уставка. */
-#define APPROACH_T_BASE    20.0f   /* база для процента (0% ≈ комнатная), 100% = setpoint */
-#define APPROACH_PCT_80    0.80f   /* при 80% пути к уставке → макс 50%, пауза 5 сек */
-#define APPROACH_PCT_90    0.90f   /* при 90% → 25%, ждём 5 сек */
-#define APPROACH_PCT_97    0.97f   /* при 97% → 15%, пауза 5 сек */
-#define APPROACH_CAP_Z1    50.0f
-#define APPROACH_CAP_Z2    17.0f   /* меньше мощность в зоне 90% — меньше перелёт */
-#define APPROACH_CAP_Z3    9.0f    /* мягкий финиш, перелёт ~0.5°, 9% чуть поддерживает против просадки */
-#define APPROACH_PAUSE_10_MS 5000UL /* пауза нагревa 5 сек при первом входе в зону 80% */
-#define APPROACH_PAUSE_90_MS 30000UL /* пауза при 90% (осталось 10% до цели), против перелёта после пролива */
-#define APPROACH_WAIT_MS    6000UL  /* задержка в зоне 90% перед переходом в зону 97% */
-#define APPROACH_PAUSE_MS   18000UL /* пауза в зоне 97% 18 с — больше выдержка, меньше перелёт */
+/* Ограничение мощности при приближении к уставке (landing). Пороги в % пути: 100% = setpoint. */
+#define APPROACH_T_BASE       20.0f   /* база для процента (0% ≈ комнатная), 100% = setpoint */
+#define LANDING_START_PCT     0.70f   /* начало плавного снижения мощности (70% пути) */
+#define LANDING_CAP_FAR       85.0f   /* макс мощность до посадки (далеко от цели) */
+#define LANDING_CAP_3         3.0f    /* макс мощность PID у самой цели */
 /* Учёт инерции: длинное окно ШИМ близко к цели, подогрев чуть выше уставки */
-#define PID_WINDOW_NEAR_MS  10000UL /* окно 10 с в зонах 90%/97% — реже включения, меньше перелёт */
+#define PID_WINDOW_NEAR_MS  20000UL /* окно 10 с в зонах 90%/97% — реже включения, меньше перелёт */
 #define MAINTENANCE_HEAT_ABOVE 6.0f /* мощность 6% при 0…+0.3° выше уставки (против инерции остывания) */
 #define MAINTENANCE_BAND_ABOVE 0.3f /* полоса выше уставки для подогрева, °C */
 #define TEMP_TREND_COOLING_THRESHOLD 0.0f  /* подогрев выше уставки только когда T не растёт (tempRate ≤ 0), иначе не усиливаем перелёт */
@@ -50,7 +43,7 @@
 
 float currentTemp = 25.0;
 
-PIDController pid(9.0, 0.25, 32.0);   // Kd 32 — сильнее тормоз при росте T; PRE_SETPOINT_CAP 44% — мягче подход, перелёт 93→97 уменьшен
+PIDController pid(8.0, 0.22, 32.0);   // чуть мягче PID: меньше Kp и Ki для снижения перелёта
 
 const unsigned long pidWindow = 4000;  /* PWM window 2–5 s for SSR */
 unsigned long windowStart = 0;         /* начало текущего окна ШИМ */
@@ -58,12 +51,8 @@ unsigned long lastTelemetryMs = 0;
 static float tempFiltered = 0.0f;
 static bool tempFilterInitialized = false;
 
-/* Состояние приближения к уставке: ограничение мощности по % пути (100% = setpoint) */
-static int approachZone = 0;              /* 0=далеко, 1=≥80%, 2=≥90%, 3=≥97% */
-static unsigned long approachPause10Until = 0; /* конец паузы 5 сек при входе в зону 80% */
-static unsigned long approachPause90Until = 0; /* конец паузы 14 сек при входе в зону 90% */
-static unsigned long approachWaitUntil = 0;  /* момент, после которого разрешён переход 2→3 */
-static unsigned long approachPauseUntil = 0;  /* момент окончания паузы в зоне 97% */
+/* Состояние приближения к уставке (landing): ограничение мощности по % пути (100% = setpoint) */
+static int approachZone = 0;                 /* 0=далеко, 1=посадка активна (≥LANDING_START_PCT) */
 
 /* Тренд температуры для подогрева выше уставки: не греем, если T ещё растёт по инерции */
 static float lastTempForTrend = 0.0f;
@@ -191,10 +180,6 @@ void runMax31865Diag() {
 
 static void resetApproachState() {
   approachZone = 0;
-  approachPause10Until = 0;
-  approachPause90Until = 0;
-  approachWaitUntil = 0;
-  approachPauseUntil = 0;
 }
 
 void applyMode(Mode mode) {
@@ -553,51 +538,29 @@ void loop() {
     /* Во время пролива PID не используется, нагреватель на 100% */
     power = 100.0f;
   } else {
+    /* Базовый PID-выход */
     power = pid.compute(currentTemp);
-  }
 
-  /* Ограничение мощности по % пути к уставке (100% = setpoint). Только при нагреве, не в проливе. */
-  if (!inBrew && !heaterStandby && !autoTune.active) {
-    float setpoint = pid.getSetpoint();
-    float range = setpoint - APPROACH_T_BASE;
-    float progress = (range > 0.1f) ? constrain((currentTemp - APPROACH_T_BASE) / range, 0.0f, 1.0f) : 0.0f;
-    progress = roundf(progress * 10.0f) / 10.0f;
+    /* Landing-фаза: ограничение мощности по % пути к уставке (100% = setpoint). Только при нагреве, не в проливе. */
+    if (!heaterStandby) {
+      float setpoint = pid.getSetpoint();
+      float range = setpoint - APPROACH_T_BASE;
+      float progress = (range > 0.1f) ? constrain((currentTemp - APPROACH_T_BASE) / range, 0.0f, 1.0f) : 0.0f;
 
-    if (progress < APPROACH_PCT_80) {
-      approachZone = 0;
-      approachPause10Until = 0;
-      approachPause90Until = 0;
-      approachWaitUntil = 0;
-      approachPauseUntil = 0;
-    } else if (progress < APPROACH_PCT_90) {
-      if (approachZone < 1) {
-        approachZone = 1;
-        approachPause10Until = now + APPROACH_PAUSE_10_MS;
-      }
-      if (now < approachPause10Until)
-        power = 0.0f;
-      else
-        power = min(power, APPROACH_CAP_Z1);
-    } else if (progress < APPROACH_PCT_97) {
-      if (approachZone < 2) {
-        approachZone = 2;
-        approachPause90Until = now + APPROACH_PAUSE_90_MS;
-        approachWaitUntil = now + APPROACH_WAIT_MS;
-      }
-      /* Пауза 8 сек при первом достижении 90% (осталось 10% до цели) — против перегрева после пролива */
-      if (now < approachPause90Until)
-        power = 0.0f;
-      else
-        power = min(power, APPROACH_CAP_Z2);
-    } else {
-      if (approachZone == 2 && now < approachWaitUntil) {
-        power = min(power, APPROACH_CAP_Z2);
+      if (progress < LANDING_START_PCT) {
+        /* Далеко от цели: работаем по PID с верхним ограничением LANDING_CAP_FAR, посадка не активна */
+        approachZone = 0;
+        power = min(power, LANDING_CAP_FAR);
       } else {
-        if (approachZone < 3) {
-          approachZone = 3;
-          approachPauseUntil = now + APPROACH_PAUSE_MS;
-        }
-        power = min(power, APPROACH_CAP_Z3);
+        /* Чем ближе к уставке, тем меньше доступная мощность (плавная линейная функция) */
+        approachZone = 1;
+        float denom = (1.0f - LANDING_START_PCT);
+        float t = (denom > 0.0001f)
+                    ? constrain((progress - LANDING_START_PCT) / denom, 0.0f, 1.0f)
+                    : 1.0f;
+        /* t=0 -> далеко (cap≈LANDING_CAP_FAR), t=1 -> у цели (cap≈LANDING_CAP_3) */
+        float maxCap = LANDING_CAP_FAR + (LANDING_CAP_3 - LANDING_CAP_FAR) * t;
+        power = min(power, maxCap);
       }
     }
   }
@@ -606,7 +569,7 @@ void loop() {
   float tempRate = 0.0f;
   if (lastTempTrendMs != 0 && (now - lastTempTrendMs) >= TEMP_TREND_MIN_DT_MS)
     tempRate = (currentTemp - lastTempForTrend) / ((now - lastTempTrendMs) / 1000.0f);
-  if (!inBrew && !heaterStandby && !autoTune.active && approachZone >= 3 &&
+  if (!inBrew && !heaterStandby && !autoTune.active && approachZone >= 1 &&
       tempRate <= TEMP_TREND_COOLING_THRESHOLD) {
     float err = pid.getSetpoint() - currentTemp;
     if (err >= -MAINTENANCE_BAND_ABOVE && err < 0.0f)
@@ -615,8 +578,8 @@ void loop() {
   lastTempForTrend = currentTemp;
   lastTempTrendMs = now;
 
-  /* Окно ШИМ длиннее в зонах 90%/97% — реже включения, меньше перелёт от инерции */
-  unsigned long currentWindow = (approachZone >= 2) ? PID_WINDOW_NEAR_MS : pidWindow;
+  /* Окно ШИМ длиннее в посадочной фазе — реже включения, меньше перелёт от инерции */
+  unsigned long currentWindow = (approachZone >= 1) ? PID_WINDOW_NEAR_MS : pidWindow;
   if (now - windowStart > currentWindow)
     windowStart += currentWindow;
 
