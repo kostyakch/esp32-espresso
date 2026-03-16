@@ -21,9 +21,9 @@
 // PT100 + MAX31865 (SPI): CS=GPIO5, MOSI=GPIO23, MISO=GPIO19, CLK=GPIO18, 3V3, GND
 // Heater SSR (RexC-100 SSR-40DA): IN+=GPIO26, IN-=GND, AC load in series with heater
 // Pump SSR (SSR-10DA/SSR-25DA): IN+=GPIO27, IN-=GND, AC load in series with pump
-// Pump: burst modulation, Power (%) = ON_time / Period. Smooth: shorter period + slots spread across period.
-#define PUMP_BURST_PERIOD_MS 100
-#define PUMP_SLOT_MS         10   /* period divided into slots for even distribution */
+// Pump: burst modulation, Power (%) = ON_time / Period. Smooth: short period + small slots → frequent switching, stable pressure.
+#define PUMP_BURST_PERIOD_MS  20   /* short period so pressure doesn't drop between cycles */
+#define PUMP_SLOT_MS           2   /* small slots → very frequent on/off, smooth flow */
 #define DEFAULT_PUMP_POWER_PCT 100.0f   /* 100% = full flow, 0% = off within burst */
 #define PROFILE_PUMP_MIN_PCT   10.0f    /* min power during preinfusion ramp-up and decline ramp-down */
 // Brew button: GPIO33 -> GND (internal pull-up enabled)

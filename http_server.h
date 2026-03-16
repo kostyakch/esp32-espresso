@@ -71,18 +71,20 @@ inline void httpSetup() {
 
   /* Применить время без перезагрузки (в т.ч. во время пролива — FSM читает значения каждый цикл) */
   server.on("/api/set_times", HTTP_POST, []() {
+    bool changed = false;
     if (server.hasArg("pre")) {
       int v = server.arg("pre").toInt();
-      if (v >= 0) preinfusionMs = (unsigned long)v * 1000;
+      if (v >= 0) { preinfusionMs = (unsigned long)v * 1000; changed = true; }
     }
     if (server.hasArg("brew")) {
       int v = server.arg("brew").toInt();
-      if (v >= 0) brewMs = (unsigned long)v * 1000;
+      if (v >= 0) { brewMs = (unsigned long)v * 1000; changed = true; }
     }
     if (server.hasArg("finish")) {
       int v = server.arg("finish").toInt();
-      if (v >= 0) finishMs = (unsigned long)v * 1000;
+      if (v >= 0) { finishMs = (unsigned long)v * 1000; changed = true; }
     }
+    if (changed) saveSettings();
     if (server.hasArg("pump_pct")) {
       float v = server.arg("pump_pct").toFloat();
       if (v >= 0 && v <= 100) {
